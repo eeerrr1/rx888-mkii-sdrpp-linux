@@ -1,0 +1,846 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5e3163a..279a4be 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -31,6 +31,9 @@ option(OPT_BUILD_RFSPACE_SOURCE "Build RFspace Source Module (no dependencies re
+ option(OPT_BUILD_RTL_SDR_SOURCE "Build RTL-SDR Source Module (Dependencies: librtlsdr)" ON)
+ option(OPT_BUILD_RTL_TCP_SOURCE "Build RTL-TCP Source Module (no dependencies required)" ON)
+ option(OPT_BUILD_SDRPP_SERVER_SOURCE "Build SDR++ Server Source Module (no dependencies required)" ON)
++# FIXED: this option was referenced further down by `if (OPT_BUILD_SDDC_SOURCE)` but never
++# declared, so the SDDC (BBRF103 / RX888 / RX888 MkII) source module was silently never built.
++option(OPT_BUILD_SDDC_SOURCE "Build SDDC Source Module (Dependencies: libusb-1.0)" OFF)
+ option(OPT_BUILD_SDRPLAY_SOURCE "Build SDRplay Source Module (Dependencies: libsdrplay)" OFF)
+ option(OPT_BUILD_SOAPY_SOURCE "Build SoapySDR Source Module (Dependencies: soapysdr)" OFF)
+ option(OPT_BUILD_SPECTRAN_SOURCE "Build Spectran Source Module (Dependencies: Aaronia RTSA Suite)" OFF)
+diff --git a/core/src/core.cpp b/core/src/core.cpp
+index 2b6a89d..9b4e2d4 100644
+--- a/core/src/core.cpp
++++ b/core/src/core.cpp
+@@ -201,10 +201,18 @@ int sdrpp_main(int argc, char* argv[]) {
+     defConfig["moduleInstances"]["RTL-SDR Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["RTL-TCP Source"]["module"] = "rtl_tcp_source";
+     defConfig["moduleInstances"]["RTL-TCP Source"]["enabled"] = true;
++    // FIXED: the SDDC (BBRF103 / HF103 / RX888 / RX888 MkII / Mk3) source module had no
++    // default instance, so even once it was built the source never appeared in the UI.
++    defConfig["moduleInstances"]["SDDC Source"]["module"] = "sddc_source";
++    defConfig["moduleInstances"]["SDDC Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SDRplay Source"]["module"] = "sdrplay_source";
+     defConfig["moduleInstances"]["SDRplay Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SDR++ Server Source"]["module"] = "sdrpp_server_source";
+     defConfig["moduleInstances"]["SDR++ Server Source"]["enabled"] = true;
++    // FIXED: same problem for the generic SoapySDR source, which is the other supported way
++    // of driving an RX888 on Linux (via the SoapySDDC plugin from ExtIO_sddc).
++    defConfig["moduleInstances"]["SoapySDR Source"]["module"] = "soapy_source";
++    defConfig["moduleInstances"]["SoapySDR Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["Spectran HTTP Source"]["module"] = "spectran_http_source";
+     defConfig["moduleInstances"]["Spectran HTTP Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SpyServer Source"]["module"] = "spyserver_source";
+diff --git a/source_modules/sddc_source/libsddc/CMakeLists.txt b/source_modules/sddc_source/libsddc/CMakeLists.txt
+index d91bccd..6820a2e 100644
+--- a/source_modules/sddc_source/libsddc/CMakeLists.txt
++++ b/source_modules/sddc_source/libsddc/CMakeLists.txt
+@@ -55,7 +55,10 @@ endif ()
+ 
+ if (NOT MSVC)
+     # Configure pkgconfig file
+-    configure_file(${CMAKE_SOURCE_DIR}/libsddc.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc @ONLY)
++    # FIXED: used ${CMAKE_SOURCE_DIR} (which points at the SDR++ root when this is built as a
++    # subdirectory) and referenced a libsddc.pc.in that was missing from the repository entirely,
++    # so configure_file() failed and the whole CMake configure step aborted.
++    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/libsddc.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc @ONLY)
+ 
+     # Install pkgconfig file
+     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+@@ -69,7 +72,11 @@ else ()
+ endif ()
+ 
+ # Install the headers
+-install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
++# FIXED: same ${CMAKE_SOURCE_DIR} mistake as the pkgconfig block above. When libsddc is built
++# as a subdirectory of SDR++, CMAKE_SOURCE_DIR points at the SDR++ root, so "make install"
++# aborted with: file INSTALL cannot find ".../SDRPlusPlus/include". It also silently worked
++# when built standalone, which is why it went unnoticed upstream.
++install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+ 
+ # On Windows, install dependencies
+ if (MSVC)
+diff --git a/source_modules/sddc_source/libsddc/src/fx3_boot.c b/source_modules/sddc_source/libsddc/src/fx3_boot.c
+index c86006d..bc74ae5 100644
+--- a/source_modules/sddc_source/libsddc/src/fx3_boot.c
++++ b/source_modules/sddc_source/libsddc/src/fx3_boot.c
+@@ -1,5 +1,6 @@
+ #include "fx3_boot.h"
+ #include <stdio.h>
++#include <stdlib.h>   // FIXED: malloc/realloc were used without this header (now a hard error in C23)
+ 
+ #define FX3_TIMEOUT         1000
+ #define FX3_VENDOR_REQUEST  0xA0
+@@ -10,7 +11,8 @@ int sddc_fx3_boot_mem_read(libusb_device_handle* dev, uint32_t addr, uint8_t* da
+ }
+ 
+ int sddc_fx3_boot_mem_write(libusb_device_handle* dev, uint32_t addr, const uint8_t* data, uint16_t len) {
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, FX3_VENDOR_REQUEST, addr & 0xFFFF, addr >> 16, data, len, FX3_TIMEOUT);
++    // FIXED: explicit cast, libusb takes 'unsigned char *' (implicit conversion is an error in C23)
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, FX3_VENDOR_REQUEST, addr & 0xFFFF, addr >> 16, (unsigned char*)data, len, FX3_TIMEOUT);
+ }
+ 
+ int sddc_fx3_boot_run(libusb_device_handle* dev, uint32_t entry) {
+@@ -52,6 +54,11 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+     // Preallocate data buffer
+     int bufferSize = 0x10000;
+     uint8_t* buffer = malloc(bufferSize);
++    if (!buffer) {
++        fprintf(stderr, "Failed to allocate firmware section buffer\n");
++        fclose(fw);
++        return LIBUSB_ERROR_NO_MEM;
++    }
+ 
+     // Read every section
+     while (1) {
+@@ -83,7 +90,16 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+         // Re-allocate buffer if needed
+         if (size > bufferSize) {
+             bufferSize = size;
+-            realloc(buffer, bufferSize);
++            // FIXED: the result of realloc() was discarded, so the buffer was never actually
++            // grown and the following fread() wrote out of bounds for sections > 64KB.
++            uint8_t* newBuffer = realloc(buffer, bufferSize);
++            if (!newBuffer) {
++                fprintf(stderr, "Failed to grow firmware section buffer to %d bytes\n", bufferSize);
++                free(buffer);
++                fclose(fw);
++                return LIBUSB_ERROR_NO_MEM;
++            }
++            buffer = newBuffer;
+         }
+ 
+         // Read the section data
+@@ -108,6 +124,9 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+ 
+     // TODO: Checksum stuff and verification ideally
+ 
++    // FIXED: the section buffer was leaked on the success path
++    free(buffer);
++
+     // Close the firmware image
+     fclose(fw);
+ 
+diff --git a/source_modules/sddc_source/libsddc/src/sddc.c b/source_modules/sddc_source/libsddc/src/sddc.c
+index 820aa1d..257a01f 100644
+--- a/source_modules/sddc_source/libsddc/src/sddc.c
++++ b/source_modules/sddc_source/libsddc/src/sddc.c
+@@ -1,8 +1,12 @@
+ #include <sddc.h>
+ #include <stdlib.h>
+ #include <stdint.h>
++#include <string.h>   // FIXED: strlen/strcpy/strcmp were used without this header (hard error in C23)
+ #include <libusb.h>
+ #include <stdio.h>
++#ifndef _WIN32
++#include <unistd.h>   // FIXED: usleep() needs this (POSIX)
++#endif
+ #include "usb_interface.h"
+ 
+ struct sddc_dev {
+@@ -19,6 +23,11 @@ struct sddc_dev {
+     sddc_gpio_t gpioState;
+ };
+ 
++// FIXED: forward declarations. sddc_open() below calls these before they are defined, which C23
++// rejects as an implicit function declaration (and which then conflicts with the real prototype).
++int sddc_gpio_set(sddc_dev_t* dev, sddc_gpio_t gpios);
++int sddc_gpio_put(sddc_dev_t* dev, sddc_gpio_t gpios, bool value);
++
+ struct libusb_context* ctx = NULL;
+ char* sddc_firmware_path = NULL;
+ bool sddc_is_init = false;
+@@ -154,7 +163,9 @@ int sddc_get_device_list(sddc_devinfo_t** dev_list) {
+         sddc_devinfo_t* info = &((*dev_list)[found]);
+ 
+         // Get the serial number
+-        err = libusb_get_string_descriptor_ascii(openDev, desc.iSerialNumber, info->serial, SDDC_SERIAL_MAX_LEN-1);
++        // FIXED: sddc_devinfo_t::serial is declared const, so writing into it needs an explicit
++        // cast (was a -Wdiscarded-qualifiers warning).
++        err = libusb_get_string_descriptor_ascii(openDev, desc.iSerialNumber, (unsigned char*)info->serial, SDDC_SERIAL_MAX_LEN-1);
+         if (err < LIBUSB_SUCCESS) {
+             printf("Failed to get descriptor: %d\n", err);
+             libusb_close(openDev);
+@@ -348,7 +359,8 @@ int sddc_gpio_set(sddc_dev_t* dev, sddc_gpio_t gpios) {
+     dev->gpioState = gpios;
+ 
+     // Push to the device
+-    sddc_fx3_gpio(dev->openDev, gpios);
++    // FIXED: the return value was dropped, so this function returned an indeterminate value
++    return sddc_fx3_gpio(dev->openDev, gpios);
+ }
+ 
+ int sddc_gpio_put(sddc_dev_t* dev, sddc_gpio_t gpios, bool value) {
+@@ -445,7 +457,8 @@ sddc_error_t sddc_stop(sddc_dev_t* dev) {
+ sddc_error_t sddc_rx(sddc_dev_t* dev, int16_t* samples, int count) {
+     // Read samples from the device
+     int bytesRead = 0;
+-    int err = libusb_bulk_transfer(dev->openDev, LIBUSB_ENDPOINT_IN | 1, samples, count * sizeof(int16_t), &bytesRead, SDDC_TIMEOUT_MS);
++    // FIXED: explicit cast, libusb takes 'unsigned char *' (implicit conversion is an error in C23)
++    int err = libusb_bulk_transfer(dev->openDev, LIBUSB_ENDPOINT_IN | 1, (unsigned char*)samples, count * sizeof(int16_t), &bytesRead, SDDC_TIMEOUT_MS);
+     if (err < LIBUSB_SUCCESS) { return SDDC_ERROR_USB_ERROR; }
+     return SDDC_SUCCESS;
+ }
+\ No newline at end of file
+diff --git a/source_modules/sddc_source/libsddc/src/usb_interface.c b/source_modules/sddc_source/libsddc/src/usb_interface.c
+index 6dc17f6..e1db3e0 100644
+--- a/source_modules/sddc_source/libsddc/src/usb_interface.c
++++ b/source_modules/sddc_source/libsddc/src/usb_interface.c
+@@ -2,6 +2,10 @@
+ #include "fx3_boot.h"
+ #include <stdio.h>
+ 
++// FIXED: libusb's transfer functions take 'unsigned char *'. These calls used to rely on
++// implicit conversions, which GCC 14+ (C23 default) rejects as errors. Make the cast explicit.
++#define USB_DATA(p) ((unsigned char*)(p))
++
+ sddc_error_t sddc_init_device(libusb_device* dev, const char* firmware) {
+     // Open the device
+     libusb_device_handle* openDev;
+@@ -28,65 +32,65 @@ sddc_error_t sddc_init_device(libusb_device* dev, const char* firmware) {
+ int sddc_fx3_start(libusb_device_handle* dev) {
+     // Send the start command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_START, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_START, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_stop(libusb_device_handle* dev) {
+     // Send the stop command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_STOP, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_STOP, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_get_info(libusb_device_handle* dev, sddc_hwinfo_t* info, char enableDebug) {
+     // Fetch the info data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GET_INFO, enableDebug, 0, info, sizeof(sddc_hwinfo_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GET_INFO, enableDebug, 0, USB_DATA(info), sizeof(sddc_hwinfo_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_gpio(libusb_device_handle* dev, sddc_gpio_t gpio) {
+     // Send the GPIO state
+     uint32_t dword = gpio;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GPIO, 0, 0, &dword, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GPIO, 0, 0, USB_DATA(&dword), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_i2c_write(libusb_device_handle* dev, uint8_t addr, uint16_t reg, const uint8_t* data, uint16_t len) {
+     // Send the I2C data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_W, addr, reg, data, len, SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_W, addr, reg, USB_DATA(data), len, SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_i2c_read(libusb_device_handle* dev, uint8_t addr, uint16_t reg, const uint8_t* data, uint16_t len) {
+     // Fetch the I2C data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_R, addr, reg, data, len, SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_R, addr, reg, USB_DATA(data), len, SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_reset(libusb_device_handle* dev) {
+     // Send the reset command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_RESET, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_RESET, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_set_param(libusb_device_handle* dev, sddc_param_t param, uint16_t value) {
+     // Send the parameter
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_SET_PARAM, value, param, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_SET_PARAM, value, param, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_adc_set_samplerate(libusb_device_handle* dev, uint32_t samplerate) {
+     // Send the samplerate
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_ADC_SET_RATE, 0, 0, &samplerate, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_ADC_SET_RATE, 0, 0, USB_DATA(&samplerate), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_start(libusb_device_handle* dev, uint32_t refFreq) {
+     // Send the reset command
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_START, 0, 0, &refFreq, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_START, 0, 0, USB_DATA(&refFreq), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_tune(libusb_device_handle* dev, uint64_t frequency) {
+     // Send the reset command
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_TUNE, 0, 0, &frequency, sizeof(uint64_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_TUNE, 0, 0, USB_DATA(&frequency), sizeof(uint64_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_stop(libusb_device_handle* dev) {
+     // Send the reset command
+     uint32_t dummy; // Because the shitty firmware absolute wants data to stop the tuner, this is dumb...
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_STOP, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_STOP, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+\ No newline at end of file
+diff --git a/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp b/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
+index a74bd64..5bcfb6f 100644
+--- a/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
++++ b/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
+@@ -1,20 +1,65 @@
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <sddc.h>
+ 
+-int main() {
+-    // Set firmware image path for debugging
+-    sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++// FIXED: this tool hardcoded the firmware image path to a file on the original author's
++// machine ("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img"), so it could never bring an RX888
++// up on any other computer. The path now comes from argv[1], then $SDDC_FIRMWARE, then a
++// search of the usual locations.
++int main(int argc, char** argv) {
++    const char* fw = NULL;
++
++    if (argc > 1) {
++        fw = argv[1];
++    }
++    else {
++        fw = getenv("SDDC_FIRMWARE");
++    }
++
++    if (!fw || !fw[0]) {
++        static const char* candidates[] = {
++            "./SDDC_FX3.img",
++            "../SDDC_FX3.img",
++            "../../SDDC_FX3.img",
++            "/usr/share/sddc/SDDC_FX3.img",
++            "/usr/local/share/sddc/SDDC_FX3.img",
++            NULL
++        };
++        for (int i = 0; candidates[i]; i++) {
++            FILE* f = fopen(candidates[i], "rb");
++            if (f) { fclose(f); fw = candidates[i]; break; }
++        }
++    }
++
++    if (fw && fw[0]) {
++        sddc_set_firmware_path(fw);
++        printf("Firmware: %s\n\n", fw);
++    }
++    else {
++        fprintf(stderr, "WARNING: no SDDC_FX3.img found. A device sitting in FX3 bootloader\n"
++                        "         mode cannot be brought up without it.\n"
++                        "         Usage: %s [/path/to/SDDC_FX3.img]\n\n", argv[0]);
++    }
+ 
+     // List available devices
+-    sddc_devinfo_t* devList;
++    sddc_devinfo_t* devList = NULL;
+     int count = sddc_get_device_list(&devList);
+     if (count < 0) {
+-        fprintf(stderr, "Failed to list devices: %d\n", count);
++        fprintf(stderr, "Failed to list devices: %d (%s)\n", count,
++                sddc_error_to_string((sddc_error_t)count));
++        if (count == SDDC_ERROR_USB_ERROR) {
++            fprintf(stderr, "Hint: LIBUSB_ERROR_ACCESS (-3) means the current user is not allowed\n"
++                            "      to open the USB device. Install the udev rule (see setup-root.sh).\n");
++        }
+         return -1;
+     }
+     else if (!count) {
++        // FIXED: returned 0 here, so a caller could not tell "no device / not permitted" from
++        // success. Verification scripts need a meaningful exit status.
+         printf("No device found.\n");
+-        return 0;
++        fprintf(stderr, "Hint: if the RX888 is plugged in, the usual cause is LIBUSB_ERROR_ACCESS (-3),\n"
++                        "      i.e. missing /etc/udev/rules.d/99-sddc.rules (see setup-root.sh).\n");
++        return 1;
+     }
+ 
+     // Show the devices in the list
+@@ -32,4 +77,4 @@ int main() {
+     // Free the device list and exit
+     sddc_free_device_list(devList);
+     return 0;
+-}
+\ No newline at end of file
++}
+diff --git a/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp b/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
+index 28096b1..c746bda 100644
+--- a/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
++++ b/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
+@@ -1,38 +1,219 @@
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <time.h>
++#include <math.h>
+ #include <sddc.h>
+ 
+-int main() {
+-    // Set firmware image path for debugging
+-    sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++// FIXED: this tool had two upstream defects that made it unusable on any machine
++// other than the original author's:
++//   1. It hardcoded the firmware image path to "C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img",
++//      so an RX888 sitting in FX3 bootloader mode could never be brought up.
++//   2. It hardcoded the device serial number "0009072C00C40C32", so it would fail on
++//      every other unit even after the firmware had loaded.
++// It was also an infinite loop that reported the *error code* as a sample count.
++// It is now a proper capture/health-check utility:
++//
++//   sddc_rx [firmware.img] [buffers] [samplerate_hz] [out.raw]
++//
++// It opens the first device it finds, sets the sample rate, streams a bounded number
++// of buffers, and prints per-buffer statistics plus sustained throughput. The latter
++// is the practical way to tell a real USB 3.0 link from a USB 2.0 one: the RX888
++// needs roughly 2 * samplerate bytes/s, which USB 2.0 cannot sustain.
++//
++// Returns 0 if data flowed and looked alive, non-zero otherwise (usable from scripts).
+ 
+-    // Open the device
+-    sddc_dev_t* dev;
+-    sddc_error_t err = sddc_open("0009072C00C40C32", &dev);
++#define BUF_SAMPLES 262144  // 256 K samples = 512 KB per transfer
++
++static const char* find_firmware(int argc, char** argv) {
++    if (argc > 1 && argv[1][0]) { return argv[1]; }
++
++    const char* env = getenv("SDDC_FIRMWARE");
++    if (env && env[0]) { return env; }
++
++    static const char* candidates[] = {
++        "./SDDC_FX3.img",
++        "../SDDC_FX3.img",
++        "../../SDDC_FX3.img",
++        "/usr/share/sddc/SDDC_FX3.img",
++        "/usr/local/share/sddc/SDDC_FX3.img",
++        NULL
++    };
++    for (int i = 0; candidates[i]; i++) {
++        FILE* f = fopen(candidates[i], "rb");
++        if (f) { fclose(f); return candidates[i]; }
++    }
++    return NULL;
++}
++
++static double now_s(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
++}
++
++int main(int argc, char** argv) {
++    const char* fw = find_firmware(argc, argv);
++    if (fw) {
++        sddc_set_firmware_path(fw);
++        printf("Firmware: %s\n", fw);
++    }
++    else {
++        fprintf(stderr,
++                "WARNING: no SDDC_FX3.img found. A device sitting in FX3 bootloader mode\n"
++                "         cannot be brought up without one.\n"
++                "         Usage: %s [firmware.img] [buffers] [samplerate_hz] [out.raw]\n\n",
++                argv[0]);
++    }
++
++    int wantBuffers = (argc > 2) ? atoi(argv[2]) : 8;
++    if (wantBuffers <= 0 || wantBuffers > 100000) { wantBuffers = 8; }
++
++    uint32_t samplerate = (argc > 3) ? (uint32_t)strtoul(argv[3], NULL, 10) : 32000000u;
++    const char* outPath = (argc > 4) ? argv[4] : NULL;
++
++    // --- Enumerate ---------------------------------------------------------
++    sddc_devinfo_t* devList = NULL;
++    int count = sddc_get_device_list(&devList);
++    if (count < 0) {
++        fprintf(stderr, "Failed to list devices: %d (%s)\n", count,
++                sddc_error_to_string((sddc_error_t)count));
++        if (count == SDDC_ERROR_NOT_FOUND) {
++            fprintf(stderr,
++                    "Hint: LIBUSB_ERROR_ACCESS (-3) -> the current user may not open the USB\n"
++                    "      device. Install /etc/udev/rules.d/99-sddc.rules (see setup-root.sh),\n"
++                    "      then re-plug or run: sudo udevadm trigger --subsystem-match=usb\n");
++        }
++        return 2;
++    }
++    if (count == 0) {
++        printf("No device found.\n");
++        return 3;
++    }
++
++    printf("Found %d device(s):\n", count);
++    for (int i = 0; i < count; i++) {
++        printf("  [%d] serial=%s  model=%s  fw=v%d.%d\n", i, devList[i].serial,
++               sddc_model_to_string(devList[i].model),
++               devList[i].firmwareMajor, devList[i].firmwareMinor);
++    }
++
++    // Copy the serial before freeing the list: sddc_open() takes a plain C string.
++    char serial[SDDC_SERIAL_MAX_LEN];
++    memcpy(serial, devList[0].serial, sizeof(serial));
++    serial[sizeof(serial) - 1] = '\0';
++    sddc_free_device_list(devList);
++
++    // --- Open --------------------------------------------------------------
++    sddc_dev_t* dev = NULL;
++    sddc_error_t err = sddc_open(serial, &dev);
+     if (err != SDDC_SUCCESS) {
+-        printf("Failed to open device: %s (%d)\n", sddc_error_to_string(err), err);
+-        return -1;
++        fprintf(stderr, "Failed to open device %s: %s (%d)\n",
++                serial, sddc_error_to_string(err), err);
++        return 4;
+     }
++    printf("\nOpened %s\n", serial);
+ 
+-    // Configure the device
+-    sddc_set_samplerate(dev, 8e6);
++    sddc_range_t sr = sddc_get_samplerate_range(dev);
++    printf("Samplerate range: %.0f .. %.0f Hz (step %.0f)\n", sr.start, sr.end, sr.step);
+ 
+-    // Start the device
+-    sddc_start(dev);
++    err = sddc_set_samplerate(dev, samplerate);
++    if (err != SDDC_SUCCESS) {
++        fprintf(stderr, "Failed to set samplerate %u: %s (%d)\n", samplerate,
++                sddc_error_to_string(err), err);
++        sddc_close(dev);
++        return 5;
++    }
++    printf("Samplerate set to %u Hz  (raw USB payload = %.1f MB/s)\n\n",
++           samplerate, (double)samplerate * 2.0 / 1e6);
+ 
+-    // Continuous read samples
+-    const int bufSize = 1e6;
+-    int16_t* buffer = new int16_t[bufSize];
+-    while (true) {
+-        // Read
+-        sddc_error_t err = sddc_rx(dev, buffer, bufSize);
+-        printf("Samples received: %d\n", err);
++    err = sddc_start(dev);
++    if (err != SDDC_SUCCESS) {
++        fprintf(stderr, "Failed to start streaming: %s (%d)\n",
++                sddc_error_to_string(err), err);
++        sddc_close(dev);
++        return 6;
+     }
+ 
+-    // Stop the device
+-    sddc_stop(dev);
++    // --- Capture -----------------------------------------------------------
++    int16_t* buf = (int16_t*)malloc(BUF_SAMPLES * sizeof(int16_t));
++    if (!buf) { sddc_stop(dev); sddc_close(dev); return 7; }
++
++    FILE* out = NULL;
++    if (outPath) {
++        out = fopen(outPath, "wb");
++        if (!out) { fprintf(stderr, "Cannot open output file %s\n", outPath); }
++        else { printf("Writing raw int16 samples to %s\n", outPath); }
++    }
++
++    printf("%-7s %-10s %8s %8s %8s %8s %10s %9s\n",
++           "buffer", "bytes", "min", "max", "mean", "stdev", "zeros%", "MB/s");
++    printf("---------------------------------------------------------------------------\n");
++
++    int okBuffers = 0;
++    double tFirst = 0.0, tLast = 0.0;
++    long totalSamples = 0;
++
++    for (int b = 0; b < wantBuffers; b++) {
++        double t0 = now_s();
++        err = sddc_rx(dev, buf, BUF_SAMPLES);
++        double t1 = now_s();
++        if (err != SDDC_SUCCESS) {
++            printf("buffer %d: FAILED %s (%d)\n", b, sddc_error_to_string(err), err);
++            break;
++        }
++        if (b == 0) { tFirst = t0; }
++        tLast = t1;
+ 
+-    // Close the device
++        int32_t mn = 32767, mx = -32768;
++        double sum = 0.0, sumsq = 0.0;
++        long zeros = 0;
++        for (int i = 0; i < BUF_SAMPLES; i++) {
++            int32_t v = buf[i];
++            if (v < mn) { mn = v; }
++            if (v > mx) { mx = v; }
++            if (v == 0) { zeros++; }
++            sum += v;
++            sumsq += (double)v * (double)v;
++        }
++        double mean = sum / BUF_SAMPLES;
++        double var = sumsq / BUF_SAMPLES - mean * mean;
++        double sd = (var > 0.0) ? sqrt(var) : 0.0;
++        double dt = t1 - t0;
++
++        printf("%-7d %-10d %8d %8d %8.1f %8.1f %9.1f%% %9.1f\n",
++               b, BUF_SAMPLES * 2, mn, mx, mean, sd,
++               100.0 * (double)zeros / BUF_SAMPLES,
++               dt > 0.0 ? (BUF_SAMPLES * 2.0 / dt / 1e6) : 0.0);
++
++        if (out && out) { fwrite(buf, sizeof(int16_t), BUF_SAMPLES, out); }
++        totalSamples += BUF_SAMPLES;
++        okBuffers++;
++    }
++
++    if (out) { fclose(out); }
++
++    // --- Verdict -----------------------------------------------------------
++    printf("\n---- 判定 ----\n");
++    printf("成功缓冲: %d / %d\n", okBuffers, wantBuffers);
++    if (okBuffers > 1) {
++        double span = tLast - tFirst;
++        double mbps = (span > 0.0)
++                      ? ((double)(okBuffers - 1) * BUF_SAMPLES * 2.0 / span / 1e6)
++                      : 0.0;
++        printf("持续吞吐: %.1f MB/s\n", mbps);
++        if (mbps < (double)samplerate * 2.0 / 1e6 * 0.8) {
++            printf("注意: 吞吐低于设定采样率所需带宽，可能是 USB 2.0 链路或主机算力不足。\n");
++        }
++        else {
++            printf("吞吐达标。\n");
++        }
++    }
++
++    free(buf);
++    sddc_stop(dev);
+     sddc_close(dev);
+ 
+-    return 0;
+-}
+\ No newline at end of file
++    return (okBuffers > 0) ? 0 : 1;
++}
+diff --git a/source_modules/sddc_source/src/main.cpp b/source_modules/sddc_source/src/main.cpp
+index c0ddf37..6952616 100644
+--- a/source_modules/sddc_source/src/main.cpp
++++ b/source_modules/sddc_source/src/main.cpp
+@@ -6,6 +6,12 @@
+ #include <core.h>
+ #include <utils/optionlist.h>
+ #include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <filesystem>
++#include <string>
++#include <vector>
+ #include <sddc.h>
+ 
+ SDRPP_MOD_INFO{
+@@ -26,8 +32,29 @@ public:
+     SDDCSourceModule(std::string name) {
+         this->name = name;
+ 
+-        // Set firmware image path for debugging
+-        sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++        // Resolve the SDDC/firmware image path.
++        // FIXED: this used to be hardcoded to a file on the original author's machine
++        // ("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img"), which made the module unusable
++        // everywhere else. The FX3 has to be given SDDC_FX3.img before it will stream.
++        config.acquire();
++        std::string cfgFwPath;
++        if (config.conf.contains("firmwarePath") && config.conf["firmwarePath"].is_string()) {
++            cfgFwPath = config.conf["firmwarePath"].get<std::string>();
++        }
++        config.release();
++
++        firmwarePath = resolveFirmwarePath(cfgFwPath);
++        strncpy(fwPathBuf, firmwarePath.c_str(), sizeof(fwPathBuf) - 1);
++        fwPathBuf[sizeof(fwPathBuf) - 1] = '\0';
++
++        if (firmwarePath.empty()) {
++            flog::error("SDDC: SDDC_FX3.img not found. Put it next to the SDR++ binary, install it to "
++                        "/usr/share/sddc/, set the SDDC_FIRMWARE env var, or set \"firmwarePath\" in sddc_config.json");
++        }
++        else {
++            sddc_set_firmware_path(firmwarePath.c_str());
++            flog::info("SDDC: firmware image: {}", firmwarePath);
++        }
+ 
+         sampleRate = 128e6;
+ 
+@@ -94,33 +121,84 @@ private:
+         return std::string(buf);
+     }
+ 
++    // Search for SDDC_FX3.img in the usual places. Returns an empty string if not found.
++    static std::string resolveFirmwarePath(const std::string& configured) {
++        std::vector<std::string> candidates;
++        if (!configured.empty()) { candidates.push_back(configured); }
++
++        const char* env = std::getenv("SDDC_FIRMWARE");
++        if (env && env[0]) { candidates.push_back(std::string(env)); }
++
++        const std::string root = core::args["root"].s();
++        candidates.push_back(root + "/SDDC_FX3.img");
++        candidates.push_back(root + "/firmware/SDDC_FX3.img");
++        candidates.push_back(root + "/res/SDDC_FX3.img");
++        candidates.push_back("/usr/share/sddc/SDDC_FX3.img");
++        candidates.push_back("/usr/local/share/sddc/SDDC_FX3.img");
++
++        const char* home = std::getenv("HOME");
++        if (home && home[0]) {
++            const std::string h(home);
++            candidates.push_back(h + "/.local/share/sddc/SDDC_FX3.img");
++            candidates.push_back(h + "/sdr/SDDC_FX3.img");
++            candidates.push_back(h + "/sdr/ExtIO_sddc/SDDC_FX3.img");
++        }
++
++        for (const std::string& c : candidates) {
++            if (c.empty()) { continue; }
++            std::error_code ec;
++            if (std::filesystem::exists(c, ec) && !ec) { return c; }
++        }
++        return "";
++    }
++
+     void refresh() {
+         devices.clear();
+-        
+-        // // Get device list
+-        // sddc_devinfo_t* devList;
+-        // int count = sddc_get_device_list(&devList);
+-        // if (count < 0) {
+-        //     flog::error("Failed to list SDDC devices: {}", count);
+-        //     return;
+-        // }
+ 
+-        // // Add every device found
+-        // for (int i = 0; i < count; i++) {
+-        //     // Create device name
+-        //     std::string name = sddc_model_to_string(devList[i].model);
+-        //     name += '[';
+-        //     name += devList[i].serial;
+-        //     name += ']';
++        // Get the device list.
++        // FIXED: this was commented out and replaced by a single hardcoded serial number
++        // ("0009072C00C40C32") belonging to the original author's unit.
++        // Side effect worth knowing: for a device still sitting in FX3 bootloader mode
++        // (04b4:00f3), sddc_get_device_list() uploads the firmware and waits for the unit
++        // to re-enumerate as 04b4:00f1. So this call is also the firmware loader.
++        if (firmwarePath.empty()) {
++            flog::error("SDDC: cannot enumerate devices, no firmware image configured");
++            return;
++        }
++        sddc_set_firmware_path(firmwarePath.c_str());
+ 
+-        //     // Add an entry to the device list
+-        //     devices.define(devList[i].serial, name, devList[i].serial);
+-        // }
++        sddc_devinfo_t* devList = NULL;
++        int count = sddc_get_device_list(&devList);
++        if (count < 0) {
++            flog::error("SDDC: failed to list devices (error {})", count);
++            return;
++        }
+ 
+-        devices.define("0009072C00C40C32", "TESTING", "0009072C00C40C32");
++        // Add every device found
++        for (int i = 0; i < count; i++) {
++            // Create device name: "<model> [<serial>] fw <major>.<minor>"
++            std::string devName = sddc_model_to_string(devList[i].model);
++            devName += " [";
++            devName += devList[i].serial;
++            devName += "]";
+ 
+-        // // Free the device list
+-        // sddc_free_device_list(devList);
++            char fwbuf[48];
++            snprintf(fwbuf, sizeof(fwbuf), " fw %d.%d", devList[i].firmwareMajor, devList[i].firmwareMinor);
++            devName += fwbuf;
++
++            // Add an entry to the device list
++            devices.define(devList[i].serial, devName, devList[i].serial);
++        }
++
++        // Free the device list
++        sddc_free_device_list(devList);
++
++        if (count == 0) {
++            flog::warn("SDDC: no device found (looked for VID 04b4 with PID 00f1 and 00f3)");
++        }
++        else {
++            flog::info("SDDC: found {} device(s)", count);
++        }
+     }
+ 
+     void select(const std::string& serial) {
+@@ -322,25 +400,46 @@ private:
+         
+         if (_this->running) { SmGui::BeginDisabled(); }
+ 
++        // Firmware image path. Must be valid before any device can be enumerated, since a
++        // unit in FX3 bootloader mode is only brought up by uploading this image.
++        SmGui::LeftLabel("Firmware image");
+         SmGui::FillWidth();
+-        SmGui::ForceSync();
+-        if (SmGui::Combo(CONCAT("##_sddc_dev_sel_", _this->name), &_this->devId, _this->devices.txt)) {
+-            _this->select(_this->devices.key(_this->devId));
+-            core::setInputSampleRate(_this->sampleRate);
+-            config.acquire();
+-            config.conf["device"] = _this->selectedSerial;
+-            config.release(true);
++        if (SmGui::InputText(CONCAT("##_sddc_fw_path_", _this->name), _this->fwPathBuf, sizeof(_this->fwPathBuf))) {
++            _this->firmwarePath = std::string(_this->fwPathBuf);
++            if (!_this->firmwarePath.empty()) {
++                sddc_set_firmware_path(_this->firmwarePath.c_str());
++                config.acquire();
++                config.conf["firmwarePath"] = _this->firmwarePath;
++                config.release(true);
++            }
+         }
+ 
+-        if (SmGui::Combo(CONCAT("##_sddc_sr_sel_", _this->name), &_this->srId, _this->samplerates.txt)) {
+-            _this->sampleRate = _this->samplerates.value(_this->srId);
+-            core::setInputSampleRate(_this->sampleRate);
+-            if (!_this->selectedSerial.empty()) {
++        if (!_this->devices.empty()) {
++            SmGui::FillWidth();
++            SmGui::ForceSync();
++            if (SmGui::Combo(CONCAT("##_sddc_dev_sel_", _this->name), &_this->devId, _this->devices.txt)) {
++                _this->select(_this->devices.key(_this->devId));
++                core::setInputSampleRate(_this->sampleRate);
+                 config.acquire();
+-                config.conf["devices"][_this->selectedSerial]["samplerate"] = _this->samplerates.key(_this->srId);
++                config.conf["device"] = _this->selectedSerial;
+                 config.release(true);
+             }
+         }
++        else {
++            SmGui::Text("No SDDC device found");
++        }
++
++        if (!_this->samplerates.empty()) {
++            if (SmGui::Combo(CONCAT("##_sddc_sr_sel_", _this->name), &_this->srId, _this->samplerates.txt)) {
++                _this->sampleRate = _this->samplerates.value(_this->srId);
++                core::setInputSampleRate(_this->sampleRate);
++                if (!_this->selectedSerial.empty()) {
++                    config.acquire();
++                    config.conf["devices"][_this->selectedSerial]["samplerate"] = _this->samplerates.key(_this->srId);
++                    config.release(true);
++                }
++            }
++        }
+ 
+         SmGui::SameLine();
+         SmGui::FillWidth();
+@@ -479,6 +578,9 @@ private:
+     int vgaGain = 0;
+     std::string selectedSerial;
+ 
++    std::string firmwarePath;
++    char fwPathBuf[512] = {0};
++
+     sddc_dev_t* openDev;
+ 
+     int bufferSize;
+@@ -493,6 +595,7 @@ MOD_EXPORT void _INIT_() {
+     json def = json({});
+     def["devices"] = json({});
+     def["device"] = "";
++    def["firmwarePath"] = "";
+     config.setPath(core::args["root"].s() + "/sddc_config.json");
+     config.load(def);
+     config.enableAutoSave();

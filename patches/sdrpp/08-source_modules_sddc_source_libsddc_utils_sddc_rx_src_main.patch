@@ -1,0 +1,249 @@
+diff --git a/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp b/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
+index 28096b1..c746bda 100644
+--- a/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
++++ b/source_modules/sddc_source/libsddc/utils/sddc_rx/src/main.cpp
+@@ -1,38 +1,219 @@
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <time.h>
++#include <math.h>
+ #include <sddc.h>
+ 
+-int main() {
+-    // Set firmware image path for debugging
+-    sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++// FIXED: this tool had two upstream defects that made it unusable on any machine
++// other than the original author's:
++//   1. It hardcoded the firmware image path to "C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img",
++//      so an RX888 sitting in FX3 bootloader mode could never be brought up.
++//   2. It hardcoded the device serial number "0009072C00C40C32", so it would fail on
++//      every other unit even after the firmware had loaded.
++// It was also an infinite loop that reported the *error code* as a sample count.
++// It is now a proper capture/health-check utility:
++//
++//   sddc_rx [firmware.img] [buffers] [samplerate_hz] [out.raw]
++//
++// It opens the first device it finds, sets the sample rate, streams a bounded number
++// of buffers, and prints per-buffer statistics plus sustained throughput. The latter
++// is the practical way to tell a real USB 3.0 link from a USB 2.0 one: the RX888
++// needs roughly 2 * samplerate bytes/s, which USB 2.0 cannot sustain.
++//
++// Returns 0 if data flowed and looked alive, non-zero otherwise (usable from scripts).
+ 
+-    // Open the device
+-    sddc_dev_t* dev;
+-    sddc_error_t err = sddc_open("0009072C00C40C32", &dev);
++#define BUF_SAMPLES 262144  // 256 K samples = 512 KB per transfer
++
++static const char* find_firmware(int argc, char** argv) {
++    if (argc > 1 && argv[1][0]) { return argv[1]; }
++
++    const char* env = getenv("SDDC_FIRMWARE");
++    if (env && env[0]) { return env; }
++
++    static const char* candidates[] = {
++        "./SDDC_FX3.img",
++        "../SDDC_FX3.img",
++        "../../SDDC_FX3.img",
++        "/usr/share/sddc/SDDC_FX3.img",
++        "/usr/local/share/sddc/SDDC_FX3.img",
++        NULL
++    };
++    for (int i = 0; candidates[i]; i++) {
++        FILE* f = fopen(candidates[i], "rb");
++        if (f) { fclose(f); return candidates[i]; }
++    }
++    return NULL;
++}
++
++static double now_s(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
++}
++
++int main(int argc, char** argv) {
++    const char* fw = find_firmware(argc, argv);
++    if (fw) {
++        sddc_set_firmware_path(fw);
++        printf("Firmware: %s\n", fw);
++    }
++    else {
++        fprintf(stderr,
++                "WARNING: no SDDC_FX3.img found. A device sitting in FX3 bootloader mode\n"
++                "         cannot be brought up without one.\n"
++                "         Usage: %s [firmware.img] [buffers] [samplerate_hz] [out.raw]\n\n",
++                argv[0]);
++    }
++
++    int wantBuffers = (argc > 2) ? atoi(argv[2]) : 8;
++    if (wantBuffers <= 0 || wantBuffers > 100000) { wantBuffers = 8; }
++
++    uint32_t samplerate = (argc > 3) ? (uint32_t)strtoul(argv[3], NULL, 10) : 32000000u;
++    const char* outPath = (argc > 4) ? argv[4] : NULL;
++
++    // --- Enumerate ---------------------------------------------------------
++    sddc_devinfo_t* devList = NULL;
++    int count = sddc_get_device_list(&devList);
++    if (count < 0) {
++        fprintf(stderr, "Failed to list devices: %d (%s)\n", count,
++                sddc_error_to_string((sddc_error_t)count));
++        if (count == SDDC_ERROR_NOT_FOUND) {
++            fprintf(stderr,
++                    "Hint: LIBUSB_ERROR_ACCESS (-3) -> the current user may not open the USB\n"
++                    "      device. Install /etc/udev/rules.d/99-sddc.rules (see setup-root.sh),\n"
++                    "      then re-plug or run: sudo udevadm trigger --subsystem-match=usb\n");
++        }
++        return 2;
++    }
++    if (count == 0) {
++        printf("No device found.\n");
++        return 3;
++    }
++
++    printf("Found %d device(s):\n", count);
++    for (int i = 0; i < count; i++) {
++        printf("  [%d] serial=%s  model=%s  fw=v%d.%d\n", i, devList[i].serial,
++               sddc_model_to_string(devList[i].model),
++               devList[i].firmwareMajor, devList[i].firmwareMinor);
++    }
++
++    // Copy the serial before freeing the list: sddc_open() takes a plain C string.
++    char serial[SDDC_SERIAL_MAX_LEN];
++    memcpy(serial, devList[0].serial, sizeof(serial));
++    serial[sizeof(serial) - 1] = '\0';
++    sddc_free_device_list(devList);
++
++    // --- Open --------------------------------------------------------------
++    sddc_dev_t* dev = NULL;
++    sddc_error_t err = sddc_open(serial, &dev);
+     if (err != SDDC_SUCCESS) {
+-        printf("Failed to open device: %s (%d)\n", sddc_error_to_string(err), err);
+-        return -1;
++        fprintf(stderr, "Failed to open device %s: %s (%d)\n",
++                serial, sddc_error_to_string(err), err);
++        return 4;
+     }
++    printf("\nOpened %s\n", serial);
+ 
+-    // Configure the device
+-    sddc_set_samplerate(dev, 8e6);
++    sddc_range_t sr = sddc_get_samplerate_range(dev);
++    printf("Samplerate range: %.0f .. %.0f Hz (step %.0f)\n", sr.start, sr.end, sr.step);
+ 
+-    // Start the device
+-    sddc_start(dev);
++    err = sddc_set_samplerate(dev, samplerate);
++    if (err != SDDC_SUCCESS) {
++        fprintf(stderr, "Failed to set samplerate %u: %s (%d)\n", samplerate,
++                sddc_error_to_string(err), err);
++        sddc_close(dev);
++        return 5;
++    }
++    printf("Samplerate set to %u Hz  (raw USB payload = %.1f MB/s)\n\n",
++           samplerate, (double)samplerate * 2.0 / 1e6);
+ 
+-    // Continuous read samples
+-    const int bufSize = 1e6;
+-    int16_t* buffer = new int16_t[bufSize];
+-    while (true) {
+-        // Read
+-        sddc_error_t err = sddc_rx(dev, buffer, bufSize);
+-        printf("Samples received: %d\n", err);
++    err = sddc_start(dev);
++    if (err != SDDC_SUCCESS) {
++        fprintf(stderr, "Failed to start streaming: %s (%d)\n",
++                sddc_error_to_string(err), err);
++        sddc_close(dev);
++        return 6;
+     }
+ 
+-    // Stop the device
+-    sddc_stop(dev);
++    // --- Capture -----------------------------------------------------------
++    int16_t* buf = (int16_t*)malloc(BUF_SAMPLES * sizeof(int16_t));
++    if (!buf) { sddc_stop(dev); sddc_close(dev); return 7; }
++
++    FILE* out = NULL;
++    if (outPath) {
++        out = fopen(outPath, "wb");
++        if (!out) { fprintf(stderr, "Cannot open output file %s\n", outPath); }
++        else { printf("Writing raw int16 samples to %s\n", outPath); }
++    }
++
++    printf("%-7s %-10s %8s %8s %8s %8s %10s %9s\n",
++           "buffer", "bytes", "min", "max", "mean", "stdev", "zeros%", "MB/s");
++    printf("---------------------------------------------------------------------------\n");
++
++    int okBuffers = 0;
++    double tFirst = 0.0, tLast = 0.0;
++    long totalSamples = 0;
++
++    for (int b = 0; b < wantBuffers; b++) {
++        double t0 = now_s();
++        err = sddc_rx(dev, buf, BUF_SAMPLES);
++        double t1 = now_s();
++        if (err != SDDC_SUCCESS) {
++            printf("buffer %d: FAILED %s (%d)\n", b, sddc_error_to_string(err), err);
++            break;
++        }
++        if (b == 0) { tFirst = t0; }
++        tLast = t1;
+ 
+-    // Close the device
++        int32_t mn = 32767, mx = -32768;
++        double sum = 0.0, sumsq = 0.0;
++        long zeros = 0;
++        for (int i = 0; i < BUF_SAMPLES; i++) {
++            int32_t v = buf[i];
++            if (v < mn) { mn = v; }
++            if (v > mx) { mx = v; }
++            if (v == 0) { zeros++; }
++            sum += v;
++            sumsq += (double)v * (double)v;
++        }
++        double mean = sum / BUF_SAMPLES;
++        double var = sumsq / BUF_SAMPLES - mean * mean;
++        double sd = (var > 0.0) ? sqrt(var) : 0.0;
++        double dt = t1 - t0;
++
++        printf("%-7d %-10d %8d %8d %8.1f %8.1f %9.1f%% %9.1f\n",
++               b, BUF_SAMPLES * 2, mn, mx, mean, sd,
++               100.0 * (double)zeros / BUF_SAMPLES,
++               dt > 0.0 ? (BUF_SAMPLES * 2.0 / dt / 1e6) : 0.0);
++
++        if (out && out) { fwrite(buf, sizeof(int16_t), BUF_SAMPLES, out); }
++        totalSamples += BUF_SAMPLES;
++        okBuffers++;
++    }
++
++    if (out) { fclose(out); }
++
++    // --- Verdict -----------------------------------------------------------
++    printf("\n---- 判定 ----\n");
++    printf("成功缓冲: %d / %d\n", okBuffers, wantBuffers);
++    if (okBuffers > 1) {
++        double span = tLast - tFirst;
++        double mbps = (span > 0.0)
++                      ? ((double)(okBuffers - 1) * BUF_SAMPLES * 2.0 / span / 1e6)
++                      : 0.0;
++        printf("持续吞吐: %.1f MB/s\n", mbps);
++        if (mbps < (double)samplerate * 2.0 / 1e6 * 0.8) {
++            printf("注意: 吞吐低于设定采样率所需带宽，可能是 USB 2.0 链路或主机算力不足。\n");
++        }
++        else {
++            printf("吞吐达标。\n");
++        }
++    }
++
++    free(buf);
++    sddc_stop(dev);
+     sddc_close(dev);
+ 
+-    return 0;
+-}
+\ No newline at end of file
++    return (okBuffers > 0) ? 0 : 1;
++}

@@ -1,0 +1,11 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+本仓库中的补丁（patches/）与脚本（scripts/）用于 SDR++ 与 ExtIO_sddc，
+随上游采用同一许可证（GPL-3.0）。完整许可证文本见：
+
+    https://www.gnu.org/licenses/gpl-3.0.txt
+
+上游项目：
+  SDR++        https://github.com/AlexandreRouma/SDRPlusPlus   (GPL-3.0)
+  ExtIO_sddc   https://github.com/ik1xpv/ExtIO_sddc

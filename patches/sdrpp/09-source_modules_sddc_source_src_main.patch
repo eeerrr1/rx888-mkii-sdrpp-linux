@@ -1,0 +1,232 @@
+diff --git a/source_modules/sddc_source/src/main.cpp b/source_modules/sddc_source/src/main.cpp
+index c0ddf37..6952616 100644
+--- a/source_modules/sddc_source/src/main.cpp
++++ b/source_modules/sddc_source/src/main.cpp
+@@ -6,6 +6,12 @@
+ #include <core.h>
+ #include <utils/optionlist.h>
+ #include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <filesystem>
++#include <string>
++#include <vector>
+ #include <sddc.h>
+ 
+ SDRPP_MOD_INFO{
+@@ -26,8 +32,29 @@ public:
+     SDDCSourceModule(std::string name) {
+         this->name = name;
+ 
+-        // Set firmware image path for debugging
+-        sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++        // Resolve the SDDC/firmware image path.
++        // FIXED: this used to be hardcoded to a file on the original author's machine
++        // ("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img"), which made the module unusable
++        // everywhere else. The FX3 has to be given SDDC_FX3.img before it will stream.
++        config.acquire();
++        std::string cfgFwPath;
++        if (config.conf.contains("firmwarePath") && config.conf["firmwarePath"].is_string()) {
++            cfgFwPath = config.conf["firmwarePath"].get<std::string>();
++        }
++        config.release();
++
++        firmwarePath = resolveFirmwarePath(cfgFwPath);
++        strncpy(fwPathBuf, firmwarePath.c_str(), sizeof(fwPathBuf) - 1);
++        fwPathBuf[sizeof(fwPathBuf) - 1] = '\0';
++
++        if (firmwarePath.empty()) {
++            flog::error("SDDC: SDDC_FX3.img not found. Put it next to the SDR++ binary, install it to "
++                        "/usr/share/sddc/, set the SDDC_FIRMWARE env var, or set \"firmwarePath\" in sddc_config.json");
++        }
++        else {
++            sddc_set_firmware_path(firmwarePath.c_str());
++            flog::info("SDDC: firmware image: {}", firmwarePath);
++        }
+ 
+         sampleRate = 128e6;
+ 
+@@ -94,33 +121,84 @@ private:
+         return std::string(buf);
+     }
+ 
++    // Search for SDDC_FX3.img in the usual places. Returns an empty string if not found.
++    static std::string resolveFirmwarePath(const std::string& configured) {
++        std::vector<std::string> candidates;
++        if (!configured.empty()) { candidates.push_back(configured); }
++
++        const char* env = std::getenv("SDDC_FIRMWARE");
++        if (env && env[0]) { candidates.push_back(std::string(env)); }
++
++        const std::string root = core::args["root"].s();
++        candidates.push_back(root + "/SDDC_FX3.img");
++        candidates.push_back(root + "/firmware/SDDC_FX3.img");
++        candidates.push_back(root + "/res/SDDC_FX3.img");
++        candidates.push_back("/usr/share/sddc/SDDC_FX3.img");
++        candidates.push_back("/usr/local/share/sddc/SDDC_FX3.img");
++
++        const char* home = std::getenv("HOME");
++        if (home && home[0]) {
++            const std::string h(home);
++            candidates.push_back(h + "/.local/share/sddc/SDDC_FX3.img");
++            candidates.push_back(h + "/sdr/SDDC_FX3.img");
++            candidates.push_back(h + "/sdr/ExtIO_sddc/SDDC_FX3.img");
++        }
++
++        for (const std::string& c : candidates) {
++            if (c.empty()) { continue; }
++            std::error_code ec;
++            if (std::filesystem::exists(c, ec) && !ec) { return c; }
++        }
++        return "";
++    }
++
+     void refresh() {
+         devices.clear();
+-        
+-        // // Get device list
+-        // sddc_devinfo_t* devList;
+-        // int count = sddc_get_device_list(&devList);
+-        // if (count < 0) {
+-        //     flog::error("Failed to list SDDC devices: {}", count);
+-        //     return;
+-        // }
+ 
+-        // // Add every device found
+-        // for (int i = 0; i < count; i++) {
+-        //     // Create device name
+-        //     std::string name = sddc_model_to_string(devList[i].model);
+-        //     name += '[';
+-        //     name += devList[i].serial;
+-        //     name += ']';
++        // Get the device list.
++        // FIXED: this was commented out and replaced by a single hardcoded serial number
++        // ("0009072C00C40C32") belonging to the original author's unit.
++        // Side effect worth knowing: for a device still sitting in FX3 bootloader mode
++        // (04b4:00f3), sddc_get_device_list() uploads the firmware and waits for the unit
++        // to re-enumerate as 04b4:00f1. So this call is also the firmware loader.
++        if (firmwarePath.empty()) {
++            flog::error("SDDC: cannot enumerate devices, no firmware image configured");
++            return;
++        }
++        sddc_set_firmware_path(firmwarePath.c_str());
+ 
+-        //     // Add an entry to the device list
+-        //     devices.define(devList[i].serial, name, devList[i].serial);
+-        // }
++        sddc_devinfo_t* devList = NULL;
++        int count = sddc_get_device_list(&devList);
++        if (count < 0) {
++            flog::error("SDDC: failed to list devices (error {})", count);
++            return;
++        }
+ 
+-        devices.define("0009072C00C40C32", "TESTING", "0009072C00C40C32");
++        // Add every device found
++        for (int i = 0; i < count; i++) {
++            // Create device name: "<model> [<serial>] fw <major>.<minor>"
++            std::string devName = sddc_model_to_string(devList[i].model);
++            devName += " [";
++            devName += devList[i].serial;
++            devName += "]";
+ 
+-        // // Free the device list
+-        // sddc_free_device_list(devList);
++            char fwbuf[48];
++            snprintf(fwbuf, sizeof(fwbuf), " fw %d.%d", devList[i].firmwareMajor, devList[i].firmwareMinor);
++            devName += fwbuf;
++
++            // Add an entry to the device list
++            devices.define(devList[i].serial, devName, devList[i].serial);
++        }
++
++        // Free the device list
++        sddc_free_device_list(devList);
++
++        if (count == 0) {
++            flog::warn("SDDC: no device found (looked for VID 04b4 with PID 00f1 and 00f3)");
++        }
++        else {
++            flog::info("SDDC: found {} device(s)", count);
++        }
+     }
+ 
+     void select(const std::string& serial) {
+@@ -322,25 +400,46 @@ private:
+         
+         if (_this->running) { SmGui::BeginDisabled(); }
+ 
++        // Firmware image path. Must be valid before any device can be enumerated, since a
++        // unit in FX3 bootloader mode is only brought up by uploading this image.
++        SmGui::LeftLabel("Firmware image");
+         SmGui::FillWidth();
+-        SmGui::ForceSync();
+-        if (SmGui::Combo(CONCAT("##_sddc_dev_sel_", _this->name), &_this->devId, _this->devices.txt)) {
+-            _this->select(_this->devices.key(_this->devId));
+-            core::setInputSampleRate(_this->sampleRate);
+-            config.acquire();
+-            config.conf["device"] = _this->selectedSerial;
+-            config.release(true);
++        if (SmGui::InputText(CONCAT("##_sddc_fw_path_", _this->name), _this->fwPathBuf, sizeof(_this->fwPathBuf))) {
++            _this->firmwarePath = std::string(_this->fwPathBuf);
++            if (!_this->firmwarePath.empty()) {
++                sddc_set_firmware_path(_this->firmwarePath.c_str());
++                config.acquire();
++                config.conf["firmwarePath"] = _this->firmwarePath;
++                config.release(true);
++            }
+         }
+ 
+-        if (SmGui::Combo(CONCAT("##_sddc_sr_sel_", _this->name), &_this->srId, _this->samplerates.txt)) {
+-            _this->sampleRate = _this->samplerates.value(_this->srId);
+-            core::setInputSampleRate(_this->sampleRate);
+-            if (!_this->selectedSerial.empty()) {
++        if (!_this->devices.empty()) {
++            SmGui::FillWidth();
++            SmGui::ForceSync();
++            if (SmGui::Combo(CONCAT("##_sddc_dev_sel_", _this->name), &_this->devId, _this->devices.txt)) {
++                _this->select(_this->devices.key(_this->devId));
++                core::setInputSampleRate(_this->sampleRate);
+                 config.acquire();
+-                config.conf["devices"][_this->selectedSerial]["samplerate"] = _this->samplerates.key(_this->srId);
++                config.conf["device"] = _this->selectedSerial;
+                 config.release(true);
+             }
+         }
++        else {
++            SmGui::Text("No SDDC device found");
++        }
++
++        if (!_this->samplerates.empty()) {
++            if (SmGui::Combo(CONCAT("##_sddc_sr_sel_", _this->name), &_this->srId, _this->samplerates.txt)) {
++                _this->sampleRate = _this->samplerates.value(_this->srId);
++                core::setInputSampleRate(_this->sampleRate);
++                if (!_this->selectedSerial.empty()) {
++                    config.acquire();
++                    config.conf["devices"][_this->selectedSerial]["samplerate"] = _this->samplerates.key(_this->srId);
++                    config.release(true);
++                }
++            }
++        }
+ 
+         SmGui::SameLine();
+         SmGui::FillWidth();
+@@ -479,6 +578,9 @@ private:
+     int vgaGain = 0;
+     std::string selectedSerial;
+ 
++    std::string firmwarePath;
++    char fwPathBuf[512] = {0};
++
+     sddc_dev_t* openDev;
+ 
+     int bufferSize;
+@@ -493,6 +595,7 @@ MOD_EXPORT void _INIT_() {
+     json def = json({});
+     def["devices"] = json({});
+     def["device"] = "";
++    def["firmwarePath"] = "";
+     config.setPath(core::args["root"].s() + "/sddc_config.json");
+     config.load(def);
+     config.enableAutoSave();

@@ -1,0 +1,80 @@
+diff --git a/Core/arch/linux/usb_device.c b/Core/arch/linux/usb_device.c
+index 1384430..41edd1b 100644
+--- a/Core/arch/linux/usb_device.c
++++ b/Core/arch/linux/usb_device.c
+@@ -231,6 +231,59 @@ int usb_device_free_device_list(struct usb_device_info *usb_device_infos)
+ }
+ 
+ 
++/* FIXED: the FX3 needs an indeterminate amount of time to re-enumerate after the
++   firmware upload, and on a multi-controller host it can even come back on a
++   *different bus*. The original code slept a fixed 500 ms and then did exactly
++   one scan, which raced with re-enumeration and produced
++   "ERROR - usb_device@0 not found" immediately after a successful upload.
++   Poll instead, pumping libusb's hotplug events so its cached device list is
++   actually refreshed (libusb_get_device_list alone returns the cached list).
++   Returns 0 once a runtime (non-bootloader) device is visible, -1 on timeout. */
++static int wait_for_runtime_device(libusb_context *ctx, int timeout_ms)
++{
++  const int step_ms = 250;
++
++  for (int waited = 0; waited < timeout_ms; waited += step_ms) {
++    usleep((useconds_t)step_ms * 1000);
++
++    struct timeval tv;
++    tv.tv_sec = 0;
++    tv.tv_usec = 0;
++    libusb_handle_events_timeout_completed(ctx, &tv, 0);
++
++    libusb_device **list = 0;
++    ssize_t n = libusb_get_device_list(ctx, &list);
++    int hit = 0;
++
++    for (ssize_t i = 0; i < n && !hit; ++i) {
++      struct libusb_device_descriptor desc;
++      if (libusb_get_device_descriptor(list[i], &desc) != LIBUSB_SUCCESS) {
++        continue;
++      }
++      for (int k = 0; k < n_usb_device_ids; ++k) {
++        /* Only look for the runtime image; skip the boot-loader PIDs. */
++        if (usb_device_ids[k].needs_firmware) {
++          continue;
++        }
++        if (desc.idVendor == usb_device_ids[k].vid &&
++            desc.idProduct == usb_device_ids[k].pid) {
++          hit = 1;
++          break;
++        }
++      }
++    }
++
++    if (list) {
++      libusb_free_device_list(list, 1);
++    }
++    if (hit) {
++      return 0;
++    }
++  }
++
++  return -1;
++}
++
+ usb_device_t *usb_device_open(int index, const char* image,
+                               uint32_t size)
+ {
+@@ -262,8 +315,13 @@ usb_device_t *usb_device_open(int index, const char* image,
+     /* rescan USB to get a new device handle */
+     libusb_close(dev_handle);
+ 
+-    /* wait unitl firmware is ready */
+-    usleep(500 * 1000L);
++    /* FIXED: was a bare usleep(500ms); see wait_for_runtime_device() above.
++       Give the FX3 up to 20 s to come back as 04b4:00f1 before giving up. */
++    if (wait_for_runtime_device(ctx, 20000) != 0) {
++      log_error("device did not re-enumerate after firmware upload",
++                __func__, __FILE__, __LINE__);
++      goto FAIL2;
++    }
+ 
+     needs_firmware = 0;
+     dev_handle = find_usb_device(index, ctx, &device, &needs_firmware);

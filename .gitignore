@@ -1,0 +1,8 @@
+# 构建产物与本地依赖前缀（体积大，不入库）
+build/
+build-full/
+local/
+install/
+*.o
+*.so
+*.a

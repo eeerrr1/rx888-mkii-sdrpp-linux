@@ -1,0 +1,94 @@
+diff --git a/source_modules/sddc_source/libsddc/src/usb_interface.c b/source_modules/sddc_source/libsddc/src/usb_interface.c
+index 6dc17f6..e1db3e0 100644
+--- a/source_modules/sddc_source/libsddc/src/usb_interface.c
++++ b/source_modules/sddc_source/libsddc/src/usb_interface.c
+@@ -2,6 +2,10 @@
+ #include "fx3_boot.h"
+ #include <stdio.h>
+ 
++// FIXED: libusb's transfer functions take 'unsigned char *'. These calls used to rely on
++// implicit conversions, which GCC 14+ (C23 default) rejects as errors. Make the cast explicit.
++#define USB_DATA(p) ((unsigned char*)(p))
++
+ sddc_error_t sddc_init_device(libusb_device* dev, const char* firmware) {
+     // Open the device
+     libusb_device_handle* openDev;
+@@ -28,65 +32,65 @@ sddc_error_t sddc_init_device(libusb_device* dev, const char* firmware) {
+ int sddc_fx3_start(libusb_device_handle* dev) {
+     // Send the start command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_START, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_START, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_stop(libusb_device_handle* dev) {
+     // Send the stop command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_STOP, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_STOP, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_get_info(libusb_device_handle* dev, sddc_hwinfo_t* info, char enableDebug) {
+     // Fetch the info data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GET_INFO, enableDebug, 0, info, sizeof(sddc_hwinfo_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GET_INFO, enableDebug, 0, USB_DATA(info), sizeof(sddc_hwinfo_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_gpio(libusb_device_handle* dev, sddc_gpio_t gpio) {
+     // Send the GPIO state
+     uint32_t dword = gpio;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GPIO, 0, 0, &dword, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_GPIO, 0, 0, USB_DATA(&dword), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_i2c_write(libusb_device_handle* dev, uint8_t addr, uint16_t reg, const uint8_t* data, uint16_t len) {
+     // Send the I2C data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_W, addr, reg, data, len, SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_W, addr, reg, USB_DATA(data), len, SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_i2c_read(libusb_device_handle* dev, uint8_t addr, uint16_t reg, const uint8_t* data, uint16_t len) {
+     // Fetch the I2C data
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_R, addr, reg, data, len, SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_I2C_R, addr, reg, USB_DATA(data), len, SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_reset(libusb_device_handle* dev) {
+     // Send the reset command
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_RESET, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_RESET, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_fx3_set_param(libusb_device_handle* dev, sddc_param_t param, uint16_t value) {
+     // Send the parameter
+     uint32_t dummy;
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_SET_PARAM, value, param, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_FX3_SET_PARAM, value, param, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_adc_set_samplerate(libusb_device_handle* dev, uint32_t samplerate) {
+     // Send the samplerate
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_ADC_SET_RATE, 0, 0, &samplerate, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_ADC_SET_RATE, 0, 0, USB_DATA(&samplerate), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_start(libusb_device_handle* dev, uint32_t refFreq) {
+     // Send the reset command
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_START, 0, 0, &refFreq, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_START, 0, 0, USB_DATA(&refFreq), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_tune(libusb_device_handle* dev, uint64_t frequency) {
+     // Send the reset command
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_TUNE, 0, 0, &frequency, sizeof(uint64_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_TUNE, 0, 0, USB_DATA(&frequency), sizeof(uint64_t), SDDC_TIMEOUT_MS);
+ }
+ 
+ int sddc_tuner_stop(libusb_device_handle* dev) {
+     // Send the reset command
+     uint32_t dummy; // Because the shitty firmware absolute wants data to stop the tuner, this is dumb...
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_STOP, 0, 0, &dummy, sizeof(uint32_t), SDDC_TIMEOUT_MS);
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, SDDC_CMD_TUNER_STOP, 0, 0, USB_DATA(&dummy), sizeof(uint32_t), SDDC_TIMEOUT_MS);
+ }
+\ No newline at end of file

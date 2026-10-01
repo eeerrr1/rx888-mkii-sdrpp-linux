@@ -1,0 +1,61 @@
+diff --git a/source_modules/sddc_source/libsddc/src/sddc.c b/source_modules/sddc_source/libsddc/src/sddc.c
+index 820aa1d..257a01f 100644
+--- a/source_modules/sddc_source/libsddc/src/sddc.c
++++ b/source_modules/sddc_source/libsddc/src/sddc.c
+@@ -1,8 +1,12 @@
+ #include <sddc.h>
+ #include <stdlib.h>
+ #include <stdint.h>
++#include <string.h>   // FIXED: strlen/strcpy/strcmp were used without this header (hard error in C23)
+ #include <libusb.h>
+ #include <stdio.h>
++#ifndef _WIN32
++#include <unistd.h>   // FIXED: usleep() needs this (POSIX)
++#endif
+ #include "usb_interface.h"
+ 
+ struct sddc_dev {
+@@ -19,6 +23,11 @@ struct sddc_dev {
+     sddc_gpio_t gpioState;
+ };
+ 
++// FIXED: forward declarations. sddc_open() below calls these before they are defined, which C23
++// rejects as an implicit function declaration (and which then conflicts with the real prototype).
++int sddc_gpio_set(sddc_dev_t* dev, sddc_gpio_t gpios);
++int sddc_gpio_put(sddc_dev_t* dev, sddc_gpio_t gpios, bool value);
++
+ struct libusb_context* ctx = NULL;
+ char* sddc_firmware_path = NULL;
+ bool sddc_is_init = false;
+@@ -154,7 +163,9 @@ int sddc_get_device_list(sddc_devinfo_t** dev_list) {
+         sddc_devinfo_t* info = &((*dev_list)[found]);
+ 
+         // Get the serial number
+-        err = libusb_get_string_descriptor_ascii(openDev, desc.iSerialNumber, info->serial, SDDC_SERIAL_MAX_LEN-1);
++        // FIXED: sddc_devinfo_t::serial is declared const, so writing into it needs an explicit
++        // cast (was a -Wdiscarded-qualifiers warning).
++        err = libusb_get_string_descriptor_ascii(openDev, desc.iSerialNumber, (unsigned char*)info->serial, SDDC_SERIAL_MAX_LEN-1);
+         if (err < LIBUSB_SUCCESS) {
+             printf("Failed to get descriptor: %d\n", err);
+             libusb_close(openDev);
+@@ -348,7 +359,8 @@ int sddc_gpio_set(sddc_dev_t* dev, sddc_gpio_t gpios) {
+     dev->gpioState = gpios;
+ 
+     // Push to the device
+-    sddc_fx3_gpio(dev->openDev, gpios);
++    // FIXED: the return value was dropped, so this function returned an indeterminate value
++    return sddc_fx3_gpio(dev->openDev, gpios);
+ }
+ 
+ int sddc_gpio_put(sddc_dev_t* dev, sddc_gpio_t gpios, bool value) {
+@@ -445,7 +457,8 @@ sddc_error_t sddc_stop(sddc_dev_t* dev) {
+ sddc_error_t sddc_rx(sddc_dev_t* dev, int16_t* samples, int count) {
+     // Read samples from the device
+     int bytesRead = 0;
+-    int err = libusb_bulk_transfer(dev->openDev, LIBUSB_ENDPOINT_IN | 1, samples, count * sizeof(int16_t), &bytesRead, SDDC_TIMEOUT_MS);
++    // FIXED: explicit cast, libusb takes 'unsigned char *' (implicit conversion is an error in C23)
++    int err = libusb_bulk_transfer(dev->openDev, LIBUSB_ENDPOINT_IN | 1, (unsigned char*)samples, count * sizeof(int16_t), &bytesRead, SDDC_TIMEOUT_MS);
+     if (err < LIBUSB_SUCCESS) { return SDDC_ERROR_USB_ERROR; }
+     return SDDC_SUCCESS;
+ }
+\ No newline at end of file

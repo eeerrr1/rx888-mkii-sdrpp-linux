@@ -1,0 +1,61 @@
+diff --git a/source_modules/sddc_source/libsddc/src/fx3_boot.c b/source_modules/sddc_source/libsddc/src/fx3_boot.c
+index c86006d..bc74ae5 100644
+--- a/source_modules/sddc_source/libsddc/src/fx3_boot.c
++++ b/source_modules/sddc_source/libsddc/src/fx3_boot.c
+@@ -1,5 +1,6 @@
+ #include "fx3_boot.h"
+ #include <stdio.h>
++#include <stdlib.h>   // FIXED: malloc/realloc were used without this header (now a hard error in C23)
+ 
+ #define FX3_TIMEOUT         1000
+ #define FX3_VENDOR_REQUEST  0xA0
+@@ -10,7 +11,8 @@ int sddc_fx3_boot_mem_read(libusb_device_handle* dev, uint32_t addr, uint8_t* da
+ }
+ 
+ int sddc_fx3_boot_mem_write(libusb_device_handle* dev, uint32_t addr, const uint8_t* data, uint16_t len) {
+-    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, FX3_VENDOR_REQUEST, addr & 0xFFFF, addr >> 16, data, len, FX3_TIMEOUT);
++    // FIXED: explicit cast, libusb takes 'unsigned char *' (implicit conversion is an error in C23)
++    return libusb_control_transfer(dev, LIBUSB_ENDPOINT_OUT | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE, FX3_VENDOR_REQUEST, addr & 0xFFFF, addr >> 16, (unsigned char*)data, len, FX3_TIMEOUT);
+ }
+ 
+ int sddc_fx3_boot_run(libusb_device_handle* dev, uint32_t entry) {
+@@ -52,6 +54,11 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+     // Preallocate data buffer
+     int bufferSize = 0x10000;
+     uint8_t* buffer = malloc(bufferSize);
++    if (!buffer) {
++        fprintf(stderr, "Failed to allocate firmware section buffer\n");
++        fclose(fw);
++        return LIBUSB_ERROR_NO_MEM;
++    }
+ 
+     // Read every section
+     while (1) {
+@@ -83,7 +90,16 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+         // Re-allocate buffer if needed
+         if (size > bufferSize) {
+             bufferSize = size;
+-            realloc(buffer, bufferSize);
++            // FIXED: the result of realloc() was discarded, so the buffer was never actually
++            // grown and the following fread() wrote out of bounds for sections > 64KB.
++            uint8_t* newBuffer = realloc(buffer, bufferSize);
++            if (!newBuffer) {
++                fprintf(stderr, "Failed to grow firmware section buffer to %d bytes\n", bufferSize);
++                free(buffer);
++                fclose(fw);
++                return LIBUSB_ERROR_NO_MEM;
++            }
++            buffer = newBuffer;
+         }
+ 
+         // Read the section data
+@@ -108,6 +124,9 @@ int sddc_fx3_boot_upload_firmware(libusb_device_handle* dev, const char* path) {
+ 
+     // TODO: Checksum stuff and verification ideally
+ 
++    // FIXED: the section buffer was leaked on the success path
++    free(buffer);
++
+     // Close the firmware image
+     fclose(fw);
+ 

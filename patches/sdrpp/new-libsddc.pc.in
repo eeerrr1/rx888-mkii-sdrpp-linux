@@ -1,0 +1,12 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libsddc
+Description: Low level library for wideband SDR receivers (BBRF103, HF103, RX888, RX888 MkII, RX999)
+URL: https://github.com/AlexandreRouma/SDRPlusPlus
+Version: @PROJECT_VERSION@
+Requires.private: libusb-1.0
+Libs: -L${libdir} -lsddc
+Cflags: -I${includedir}

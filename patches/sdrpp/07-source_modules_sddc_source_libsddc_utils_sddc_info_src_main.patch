@@ -1,0 +1,83 @@
+diff --git a/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp b/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
+index a74bd64..5bcfb6f 100644
+--- a/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
++++ b/source_modules/sddc_source/libsddc/utils/sddc_info/src/main.cpp
+@@ -1,20 +1,65 @@
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <sddc.h>
+ 
+-int main() {
+-    // Set firmware image path for debugging
+-    sddc_set_firmware_path("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img");
++// FIXED: this tool hardcoded the firmware image path to a file on the original author's
++// machine ("C:/Users/ryzerth/Downloads/SDDC_FX3 (1).img"), so it could never bring an RX888
++// up on any other computer. The path now comes from argv[1], then $SDDC_FIRMWARE, then a
++// search of the usual locations.
++int main(int argc, char** argv) {
++    const char* fw = NULL;
++
++    if (argc > 1) {
++        fw = argv[1];
++    }
++    else {
++        fw = getenv("SDDC_FIRMWARE");
++    }
++
++    if (!fw || !fw[0]) {
++        static const char* candidates[] = {
++            "./SDDC_FX3.img",
++            "../SDDC_FX3.img",
++            "../../SDDC_FX3.img",
++            "/usr/share/sddc/SDDC_FX3.img",
++            "/usr/local/share/sddc/SDDC_FX3.img",
++            NULL
++        };
++        for (int i = 0; candidates[i]; i++) {
++            FILE* f = fopen(candidates[i], "rb");
++            if (f) { fclose(f); fw = candidates[i]; break; }
++        }
++    }
++
++    if (fw && fw[0]) {
++        sddc_set_firmware_path(fw);
++        printf("Firmware: %s\n\n", fw);
++    }
++    else {
++        fprintf(stderr, "WARNING: no SDDC_FX3.img found. A device sitting in FX3 bootloader\n"
++                        "         mode cannot be brought up without it.\n"
++                        "         Usage: %s [/path/to/SDDC_FX3.img]\n\n", argv[0]);
++    }
+ 
+     // List available devices
+-    sddc_devinfo_t* devList;
++    sddc_devinfo_t* devList = NULL;
+     int count = sddc_get_device_list(&devList);
+     if (count < 0) {
+-        fprintf(stderr, "Failed to list devices: %d\n", count);
++        fprintf(stderr, "Failed to list devices: %d (%s)\n", count,
++                sddc_error_to_string((sddc_error_t)count));
++        if (count == SDDC_ERROR_USB_ERROR) {
++            fprintf(stderr, "Hint: LIBUSB_ERROR_ACCESS (-3) means the current user is not allowed\n"
++                            "      to open the USB device. Install the udev rule (see setup-root.sh).\n");
++        }
+         return -1;
+     }
+     else if (!count) {
++        // FIXED: returned 0 here, so a caller could not tell "no device / not permitted" from
++        // success. Verification scripts need a meaningful exit status.
+         printf("No device found.\n");
+-        return 0;
++        fprintf(stderr, "Hint: if the RX888 is plugged in, the usual cause is LIBUSB_ERROR_ACCESS (-3),\n"
++                        "      i.e. missing /etc/udev/rules.d/99-sddc.rules (see setup-root.sh).\n");
++        return 1;
+     }
+ 
+     // Show the devices in the list
+@@ -32,4 +77,4 @@ int main() {
+     // Free the device list and exit
+     sddc_free_device_list(devList);
+     return 0;
+-}
+\ No newline at end of file
++}

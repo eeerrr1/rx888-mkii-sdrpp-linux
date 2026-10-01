@@ -1,0 +1,29 @@
+diff --git a/source_modules/sddc_source/libsddc/CMakeLists.txt b/source_modules/sddc_source/libsddc/CMakeLists.txt
+index d91bccd..6820a2e 100644
+--- a/source_modules/sddc_source/libsddc/CMakeLists.txt
++++ b/source_modules/sddc_source/libsddc/CMakeLists.txt
+@@ -55,7 +55,10 @@ endif ()
+ 
+ if (NOT MSVC)
+     # Configure pkgconfig file
+-    configure_file(${CMAKE_SOURCE_DIR}/libsddc.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc @ONLY)
++    # FIXED: used ${CMAKE_SOURCE_DIR} (which points at the SDR++ root when this is built as a
++    # subdirectory) and referenced a libsddc.pc.in that was missing from the repository entirely,
++    # so configure_file() failed and the whole CMake configure step aborted.
++    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/libsddc.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc @ONLY)
+ 
+     # Install pkgconfig file
+     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libsddc.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+@@ -69,7 +72,11 @@ else ()
+ endif ()
+ 
+ # Install the headers
+-install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
++# FIXED: same ${CMAKE_SOURCE_DIR} mistake as the pkgconfig block above. When libsddc is built
++# as a subdirectory of SDR++, CMAKE_SOURCE_DIR points at the SDR++ root, so "make install"
++# aborted with: file INSTALL cannot find ".../SDRPlusPlus/include". It also silently worked
++# when built standalone, which is why it went unnoticed upstream.
++install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+ 
+ # On Windows, install dependencies
+ if (MSVC)

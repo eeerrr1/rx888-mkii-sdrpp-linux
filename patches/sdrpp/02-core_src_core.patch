@@ -1,0 +1,23 @@
+diff --git a/core/src/core.cpp b/core/src/core.cpp
+index 2b6a89d..9b4e2d4 100644
+--- a/core/src/core.cpp
++++ b/core/src/core.cpp
+@@ -201,10 +201,18 @@ int sdrpp_main(int argc, char* argv[]) {
+     defConfig["moduleInstances"]["RTL-SDR Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["RTL-TCP Source"]["module"] = "rtl_tcp_source";
+     defConfig["moduleInstances"]["RTL-TCP Source"]["enabled"] = true;
++    // FIXED: the SDDC (BBRF103 / HF103 / RX888 / RX888 MkII / Mk3) source module had no
++    // default instance, so even once it was built the source never appeared in the UI.
++    defConfig["moduleInstances"]["SDDC Source"]["module"] = "sddc_source";
++    defConfig["moduleInstances"]["SDDC Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SDRplay Source"]["module"] = "sdrplay_source";
+     defConfig["moduleInstances"]["SDRplay Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SDR++ Server Source"]["module"] = "sdrpp_server_source";
+     defConfig["moduleInstances"]["SDR++ Server Source"]["enabled"] = true;
++    // FIXED: same problem for the generic SoapySDR source, which is the other supported way
++    // of driving an RX888 on Linux (via the SoapySDDC plugin from ExtIO_sddc).
++    defConfig["moduleInstances"]["SoapySDR Source"]["module"] = "soapy_source";
++    defConfig["moduleInstances"]["SoapySDR Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["Spectran HTTP Source"]["module"] = "spectran_http_source";
+     defConfig["moduleInstances"]["Spectran HTTP Source"]["enabled"] = true;
+     defConfig["moduleInstances"]["SpyServer Source"]["module"] = "spyserver_source";
