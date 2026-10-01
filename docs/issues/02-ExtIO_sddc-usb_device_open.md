@@ -69,7 +69,7 @@ Tested on Ubuntu 26.04.1 LTS / kernel 7.0.0 / GCC 15.2.0, device `04b4:00f1`, fi
 
 ## Patch
 
-The change is in `<REPO_URL>` under `patches/extio_sddc/ALL-ExtIO_sddc.patch`, and there is a standalone end-to-end verification script (`scripts/verify-device.sh`) that exercises the cold-start path.
+The change is in `https://github.com/eeerrr1/rx888-mkii-sdrpp-linux` under `patches/extio_sddc/ALL-ExtIO_sddc.patch`, and there is a standalone end-to-end verification script (`scripts/verify-device.sh`) that exercises the cold-start path.
 
 One more thing worth documenting for anyone using SoapySDDC: the factory name is registered as **uppercase `SDDC`** (`Registry registerSDDC("SDDC", …)`), and SoapySDR's `driver=` match is case-sensitive:
 

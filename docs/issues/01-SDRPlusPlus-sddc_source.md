@@ -168,7 +168,7 @@ The rest of the module is fine; it only includes headers that actually exist. Th
 
 I fixed all of the above locally, kept every change marked with a `FIXED:` comment, and wrote a from-scratch, root-free build + verification toolchain around it:
 
-- **Repo:** `<REPO_URL>`
+- **Repo:** `https://github.com/eeerrr1/rx888-mkii-sdrpp-linux`
 - `patches/sdrpp/*.patch` — one patch per file, so each defect can be reviewed individually
 - `scripts/deps-full.sh` — deploys the full dependency set without root (`apt-get download` + `dpkg-deb -x`; nothing is written to `/usr`, the dpkg database is untouched)
 - `scripts/build-sdrpp-full.sh` — full build; probes each module with `pkg-config` and turns it ON/OFF accordingly instead of hardcoding flags
