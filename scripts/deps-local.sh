@@ -85,6 +85,12 @@ echo "==> 步骤 3/4：重定位 .pc 与清理 Requires.private"
 pc_count=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
+  # 幂等：先剥掉历史上可能已注入的本地前缀（脚本会被反复执行，不做这一步
+  # 就会每跑一次叠加一层前缀）。注意只剥完整 $PREFIX，不能剥 $PREFIX/usr ——
+  # 后者会把已写好的 prefix=$PREFIX/usr 剥成空值，${prefix}/lib 塌成 /lib。
+  while grep -qF "$PREFIX" "$f"; do
+    sed -i "s|$PREFIX||g" "$f"
+  done
   # 注意：有些 .pc 写作 prefix=/usr（行尾无斜杠），必须先单独处理，
   # 否则简单的 s|/usr/|...|g 会漏掉它，导致 pkg-config 静默回退到系统路径。
   sed -i -E "s|^prefix=/usr\$|prefix=$PREFIX/usr|" "$f"
