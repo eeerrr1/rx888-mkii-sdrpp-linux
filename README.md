@@ -245,7 +245,11 @@ docs/               部署报告与适配方案
 
 1. **抓到的样本幅度偏小**（`min=-338 max=21 mean=-158`，16bit 满量程 ±32768）：这是**没接天线** + 原生模块未暴露增益所致，不是链路问题（数据在变化、0% 零值）。接天线后应明显变大。
 2. **原生模块的增益/端口/调谐器控制仍是注释状态**（上游遗留），方案文档里列为后续工作。
-3. **12 处修复目前只在本仓库**，尚未提交上游。
+3. **12 处修复目前只在本仓库**，尚未合入上游。已向上游提交 issue：
+   - SDR++（11 处 `sddc_source` + 1 处 `dab_decoder`）：[AlexandreRouma/SDRPlusPlus#1819](https://github.com/AlexandreRouma/SDRPlusPlus/issues/1819)
+   - ExtIO_sddc（SoapySDDC 冷启动）：[ik1xpv/ExtIO_sddc#250](https://github.com/ik1xpv/ExtIO_sddc/issues/250)
+
+   补丁已按文件拆分并带 `FIXED:` 注释，随时可以转成 PR。
 
 ---
 
