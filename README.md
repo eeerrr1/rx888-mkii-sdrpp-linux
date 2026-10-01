@@ -2,10 +2,44 @@
 
 把 **RX888 MkII**（以及 BBRF103 等同族 SDDC 设备）在 Linux 上跑通 SDR++ 的完整补丁集、构建脚本与验证工具。
 
-上游 `sddc_source` 模块是 2025-04 以 prototype 形式并入 SDR++ 的，存在 **12 处缺陷**：其中 3 处直接阻断编译/安装，2 处是真实内存越界 bug，7 处导致"编出来也用不了"。本仓库把这些问题全部修掉，并附带一套**全程免 root** 的依赖部署 + 构建 + 端到端验收脚本。
+上游 `sddc_source` 模块是 2025-04 以 prototype 形式并入 SDR++ 的，存在 **13 处缺陷**：其中 3 处直接阻断编译/安装，2 处是真实内存越界 bug，其余 8 处导致"编出来也用不了"。本仓库把这些问题全部修掉，并附带一套**全程免 root** 的依赖部署 + 构建 + 端到端验收脚本，以及一个**免安装自包含发布包**。
 
 > 已在 **Ubuntu 26.04.1 LTS / 内核 7.0.0 / GCC 15.2.0** 上实测通过。
 > GCC 15 默认 `-std=c23`，上游那批隐式转换/隐式声明会直接变成**硬错误**——这是本补丁集存在的主要动机。
+
+**懒得编译？** 直接下载免安装自包含包（40 个模块 + 全部依赖 + 固件，解压即用）：
+见 [Releases](https://github.com/eeerrr1/rx888-mkii-sdrpp-linux/releases) · 打包脚本 `scripts/make-release.sh`
+
+---
+
+## 零、直接下载（免编译）
+
+到 [Releases](https://github.com/eeerrr1/rx888-mkii-sdrpp-linux/releases) 下载
+`sdrpp-rx888-linux-x86_64-v1.3.0.tar.xz`（20 MB，解压后 53 MB）：
+
+```bash
+sha256sum -c sdrpp-rx888-linux-x86_64-v1.3.0.tar.xz.sha256
+tar -xf sdrpp-rx888-linux-x86_64-v1.3.0.tar.xz
+cd sdrpp-rx888-linux-x86_64
+
+sudo ./setup-device.sh     # 一次性：usbfs 内存上限 + udev 权限 + 固件
+./run-sdrpp.sh             # 启动；Source 选 "SDDC Source"
+```
+
+包内已含 40 个模块、44 个第三方运行库、SoapySDDC 插件与 FX3 固件。
+
+**为什么不直接 `tar` 一份 `make install` 的目录？** 因为上游把两处路径写死在二进制里：
+`modulesDirectory` / `resourcesDirectory` 是编译进 `libsdrpp_core.so` 的 `INSTALL_PREFIX` 宏；
+每个 ELF 的 `RUNPATH` 指向构建机的本地依赖前缀。本包用 `patchelf` 把所有 ELF 的
+`RUNPATH` 改写成 `$ORIGIN` 相对路径，再由 `run-sdrpp.sh` 用 `-r` 指定包内配置目录、
+生成指向包内实际路径的 `config.json`，因此整个目录可任意搬迁。
+
+> 两个打包时踩出来的坑，写在 `scripts/make-release.sh` 注释里：
+> ① 依赖收集**不能用 `ldd`** —— 本环境下 `ldd` 会退化成静态解析模式，把明明存在于
+> `RUNPATH` 目录里的库报成 `not found`（实测 `libspdlog.so.1.15`），据此刻画依赖会静默漏库；
+> ② **绝不能把系统图形栈（X11/xcb/GLVND/Mesa/Wayland）打进包** —— 它们的 `RUNPATH`
+> 被改写后就找不到 xcb/GLX 扩展了，表现为 GLFW 初始化直接段错误；而且图形栈必须与
+> 目标机显卡驱动匹配。脚本里都有对应的断言。
 
 ---
 
@@ -46,7 +80,7 @@ bash scripts/run-sdrpp.sh          # Source 里选 "SDDC Source" 或 "SoapySDR S
 
 ---
 
-## 二、修了什么（12 处上游缺陷）
+## 二、修了什么（13 处上游缺陷）
 
 ### A. 阻断编译 / 安装
 
@@ -168,6 +202,7 @@ scripts/
   deps-vendor.sh       编译 apt 源里没有的厂商库（librfnm / libfobos / dlcr / perseus / sdrplay）
   build-sdrpp-full.sh  全量编译：按 pkg-config 探测结果自动决定每个模块 ON/OFF
   build-sdrpp.sh       最小验证版（只编 RX888 相关的 4 个模块）
+  make-release.sh      打出免安装自包含发布包（patchelf 改写 RUNPATH + 闭包校验）
   setup-root.sh        一次性特权准备（udev / usbfs / 固件）——唯一需要 root 的一步
   verify-device.sh     7 阶段 11 项端到端验收
   run-sdrpp.sh         启动器（自动处理固件路径回退 + Soapy 插件路径）
@@ -245,7 +280,7 @@ docs/               部署报告与适配方案
 
 1. **抓到的样本幅度偏小**（`min=-338 max=21 mean=-158`，16bit 满量程 ±32768）：这是**没接天线** + 原生模块未暴露增益所致，不是链路问题（数据在变化、0% 零值）。接天线后应明显变大。
 2. **原生模块的增益/端口/调谐器控制仍是注释状态**（上游遗留），方案文档里列为后续工作。
-3. **12 处修复目前只在本仓库**，尚未合入上游。已向上游提交 issue：
+3. **13 处修复目前只在本仓库**，尚未合入上游。已向上游提交 issue：
    - SDR++（11 处 `sddc_source` + 1 处 `dab_decoder`）：[AlexandreRouma/SDRPlusPlus#1819](https://github.com/AlexandreRouma/SDRPlusPlus/issues/1819)
    - ExtIO_sddc（SoapySDDC 冷启动）：[ik1xpv/ExtIO_sddc#250](https://github.com/ik1xpv/ExtIO_sddc/issues/250)
 
