@@ -4,6 +4,8 @@ Hi, and thanks for SDR++.
 
 I spent some time getting an **RX888 MkII** (`04b4:00f1` / `04b4:00f3`) working on Linux with the in-tree `sddc_source` module. It works now, but getting there required fixing **11 defects** in `source_modules/sddc_source` — three of which make the module impossible to build or install at all, and two of which are genuine out-of-bounds writes.
 
+While doing a full-featured build I also hit **one unrelated defect in `dab_decoder`** (one missing `&`), appended at the end as **D-1**.
+
 Context that makes this worse than it looks: on **GCC 14+ the default standard is `-std=c23`**, so the implicit pointer conversions and implicit function declarations in the C sources are no longer warnings — they are hard errors. On any current distro (Ubuntu 24.04+, Fedora 40+, Arch…), a plain `cmake .. -DOPT_BUILD_SDDC_SOURCE=ON` fails out of the box.
 
 Environment where I hit this: **Ubuntu 26.04.1 LTS, kernel 7.0.0, GCC 15.2.0, x86_64**, commit `8c9f5ee`.
@@ -47,7 +49,6 @@ When built as part of SDR++, `${CMAKE_SOURCE_DIR}/include/` resolves to the SDR+
 **Fix:** `${CMAKE_CURRENT_SOURCE_DIR}`.
 
 > Note: `${CMAKE_SOURCE_DIR}` vs `${CMAKE_CURRENT_SOURCE_DIR}` appears **twice** in the same file, once breaking configure, once breaking install. Worth a grep across the tree.
-
 ### A-3. 13 implicit pointer conversions → hard errors under C23
 
 `usb_interface.c` / `sddc.c`: passing `int16_t*` and `uint32_t*` directly to `libusb_bulk_transfer()` and friends, which take `unsigned char*`.
@@ -131,6 +132,35 @@ Same file, `refresh()`: the real enumeration is commented out and replaced with 
 - it **prints the error code as if it were a sample count**
 
 **Fix:** same enumeration/path treatment as C-1/C-2, plus a sample limit (`--samples N`) and correct error handling.
+
+---
+
+## D. Unrelated, found while doing a full build
+
+### D-1. `dab_decoder` — missing `&` makes the module uncompilable
+
+`decoder_modules/dab_decoder/src/dab_dsp.h:185`:
+
+```cpp
+#if VOLK_VERSION >= 030100
+    volk_32fc_s32fc_x2_rotator2_32fc((lv_32fc_t*)_in->readBuf, (lv_32fc_t*)_in->readBuf,
+                                     phaseDelta, &phase, count);
+```
+
+In the VOLK ≥ 3.1 API the third argument is `const lv_32fc_t*` — a pointer to the **phase increment**. The code passes the value, so it fails to compile:
+
+```
+error: cannot convert 'lv_32fc_t' {aka 'std::complex<float>'} to
+       'const lv_32fc_t*' {aka 'const std::complex<float>*'} in argument passing
+```
+
+Compare the correct usage in `core/src/dsp/channel/frequency_xlator.h:45`, which passes `&phaseDelta`.
+
+**Fix:** `&phaseDelta`. Note the `#else` branch below it targets the pre-3.1 API, whose signature genuinely takes the value by copy — **do not** change that one too.
+
+The rest of the module is fine; it only includes headers that actually exist. This looks like a straight copy-paste slip from the `frequency_xlator` code.
+
+> Related, for anyone enabling everything: `kg_sstv_decoder` and `weather_sat_decoder` include headers that **do not exist anywhere in the tree** (`dsp/demodulator.h`, `dsp/window.h`, `dsp/resampling.h`, `dsp/processing.h`, `dsp/routing.h`, `dsp/deframing.h`). They cannot compile in any environment and are OFF by default — presumably known, but worth either fixing or dropping so the options don't look usable.
 
 ---
 

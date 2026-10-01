@@ -64,14 +64,23 @@ build_cmake() {
   record "$name" OK "已安装"
 }
 
-# 处理 vendor 装出来的 .pc：relocatable 一下，保证 -I/-L 指向本地前缀
+# 处理 vendor 装出来的 .pc：relocatable 一下，保证 -I/-L 指向本地前缀。
+# 规则与 deps-full.sh 里的完全一致（两条铁律）：
+#   ① 剥离时只剥「完整前缀」$PREFIX —— 绝不能剥 $PREFIX/usr，否则会把
+#      prefix=$PREFIX/usr 剥成 prefix=（空值），${prefix}/lib 塌成 /lib
+#      （libfobos/libdlcr/librfnm 的 .pc 就全是 ${prefix} 形式，一剥就废）。
+#   ② 替换串不含 "/usr/"：$PREFIX 本身不含，所以安全；若用 $PREFIX/usr，
+#      同一次 sed 会再次匹配自己写进去的 "/usr/"，每跑一次叠一层前缀。
 fix_pc() {
   while IFS= read -r f; do
     [ -f "$f" ] || continue
+    while grep -qF "$PREFIX" "$f"; do
+      sed -i "s|$PREFIX||g" "$f"
+    done
     sed -i -E "s|^prefix=/usr\$|prefix=$INS|" "$f"
     sed -i -E "s|^prefix=/usr/local\$|prefix=$INS|" "$f"
-    sed -i "s|/usr/local/|$INS/|g" "$f"
-    sed -i "s|/usr/|$INS/|g" "$f"
+    sed -i -E "s|^exec_prefix=/usr\$|exec_prefix=$INS|" "$f"
+    sed -i "s|/usr/|$PREFIX/usr/|g" "$f"
     sed -i "/^Requires\.private/d" "$f"
   done < <(find "$INS/lib" "$INS/lib/x86_64-linux-gnu" "$INS/share" -name '*.pc' 2>/dev/null)
 }

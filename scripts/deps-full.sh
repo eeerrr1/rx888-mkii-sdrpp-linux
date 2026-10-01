@@ -117,14 +117,25 @@ echo "  已解包 $n 个 .deb"
 
 echo
 echo "==> 步骤 3/4：重定位 .pc / 清理 Requires.private"
+# 重定位必须满足两条，否则会静默产生坏路径：
+#   ① 剥离时只剥「完整前缀」$PREFIX。若剥 $PREFIX/usr，会把已经写好的
+#      prefix=$PREFIX/usr 剥成 prefix=（空值），${prefix}/lib 随之塌成 /lib。
+#   ② 替换串不能含 "/usr/"。$PREFIX 不含 "/usr/"，所以 s|/usr/|$PREFIX/usr/|g
+#      是安全的；若用 $PREFIX/usr 做替换串，同一次 sed 会把自己刚写进去的
+#      "/usr/" 再匹配一遍，每跑一次叠加一层前缀。
+# 这两条正是踩过的坑：codec2.pc 曾被叠加三次前缀，导致 m17_decoder 找不到 codec2.h。
 pc_count=0
 while IFS= read -r f; do
   [ -f "$f" ] || continue
-  # 有些 .pc 写作 prefix=/usr（行尾无斜杠），必须先单独处理，否则下面的
-  # s|/usr/|...|g 会漏掉它，pkg-config 静默回退到系统路径 → 编译失败
+  while grep -qF "$PREFIX" "$f"; do          # ① 幂等剥离
+    sed -i "s|$PREFIX||g" "$f"
+  done
+  # 有些 .pc 写作 prefix=/usr（行尾无斜杠），必须先单独处理，
+  # 否则下面的 s|/usr/|...|g 会漏掉它，pkg-config 静默回退到系统路径
   sed -i -E "s|^prefix=/usr\$|prefix=$PREFIX/usr|" "$f"
+  sed -i -E "s|^prefix=/usr/local\$|prefix=$PREFIX/usr|" "$f"
   sed -i -E "s|^exec_prefix=/usr\$|exec_prefix=$PREFIX/usr|" "$f"
-  sed -i "s|/usr/|$PREFIX/usr/|g" "$f"
+  sed -i "s|/usr/|$PREFIX/usr/|g" "$f"       # ② 安全替换
   # 共享库链接不需要 Requires.private；而它常引用 x11/jack 等未解出的包，
   # 会让 pkgconf 直接报错
   sed -i "/^Requires\.private/d" "$f"
@@ -184,5 +195,19 @@ for m in fftw3f volk glfw3 libzstd SoapySDR rtaudio portaudio-2.0 \
   fi
 done
 echo "  结果: $good 可用 / $bad 缺失"
+
+echo
+echo "==> 自检：.pc 里不得出现重复注入的本地前缀"
+dup=0
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  n=$(grep -oF "$PREFIX" "$f" | wc -l)
+  # 每个文件里出现次数 = 注入的路径条数，正常应为 "路径条数" 而不是翻倍；
+  # 这里用最简单的判据：任何一行里出现 ≥2 次就是叠加坏了
+  if grep -qE "$PREFIX.*$PREFIX" "$f"; then
+    echo "  ✗ 前缀重复: ${f#$PREFIX/}"; dup=$((dup + 1))
+  fi
+done < <(find "$PREFIX/usr" -name '*.pc' 2>/dev/null)
+if [ "$dup" -eq 0 ]; then echo "  ✓ 无重复前缀"; else echo "  ✗ $dup 个 .pc 存在重复前缀（重定位未幂等）"; fi
 echo
 echo "完成。使用前请执行:  source $PREFIX/env.sh"

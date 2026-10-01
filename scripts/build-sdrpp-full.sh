@@ -47,13 +47,11 @@ SPEC=(
   "OPT_BUILD_AUDIO_SINK           pc   rtaudio            ★ 音频输出（上次没编出来）"
   "OPT_BUILD_NETWORK_SINK         none -                  网络音频 sink"
   "OPT_BUILD_ATV_DECODER          none -                  ATV 解码"
-  "OPT_BUILD_KG_SSTV_DECODER      none -                  KG-SSTV 解码"
   "OPT_BUILD_METEOR_DEMODULATOR   none -                  Meteor 解调"
   "OPT_BUILD_PAGER_DECODER        none -                  寻呼解码"
   "OPT_BUILD_RADIO                none -                  ★ 主解调（AM/FM/SSB…）"
   "OPT_BUILD_RYFI_DECODER         none -                  RyFi 解码"
   "OPT_BUILD_VOR_RECEIVER         none -                  VOR 接收"
-  "OPT_BUILD_WEATHER_SAT_DECODER  none -                  HRPT 气象卫星解码"
   "OPT_BUILD_DISCORD_PRESENCE     none -                  Discord 状态"
   "OPT_BUILD_FREQUENCY_MANAGER    none -                  频率管理"
   "OPT_BUILD_IQ_EXPORTER          none -                  IQ 导出"
@@ -72,13 +70,21 @@ SPEC=(
   "OPT_BUILD_PLUTOSDR_SOURCE      pc   libad9361          PlutoSDR（需 libiio+libad9361）"
   "OPT_BUILD_RTL_SDR_SOURCE       pc   librtlsdr          RTL-SDR"
   "OPT_BUILD_BLADERF_SOURCE       pc   libbladeRF         BladeRF"
-  "OPT_BUILD_HYDRASDR_SOURCE      pc   libhydrasdr        HydraSDR"
+  # HydraSDR：apt 的 libhydrasdr 1.0.3 把头文件里的枚举改名为 RF_PORT_RX0/RX1/RX2，
+  # 而模块写的是 HYDRASDR_RF_PORT_RX0…（对应官方 git 版 rfone_host）→ 名字对不上，
+  # 编不过。官方构建用的是自行编译的 rfone_host，本机 apt 版 API 已漂移。
+  "OPT_BUILD_HYDRASDR_SOURCE     pc   libhydrasdr-nope   HydraSDR（apt 版 API 与模块期望不一致）"
   "OPT_BUILD_NEW_PORTAUDIO_SINK   pc   portaudio-2.0      PortAudio sink（新版）"
-  "OPT_BUILD_PORTAUDIO_SINK       pc   portaudio-2.0      PortAudio sink（旧版）"
+  # 旧版 portaudio_sink 的 CMake project() 名也叫 audio_sink，与 audio_sink 模块
+  # 撞目标名，两个一起开会 add_library 冲突 → 只保留新版
+  "OPT_BUILD_PORTAUDIO_SINK       none OFF                  PortAudio sink（旧版，目标名与 audio_sink 冲突）"
   "OPT_BUILD_DAB_DECODER          pc   codec2             DAB/DAB+ 解码"
   "OPT_BUILD_M17_DECODER          pc   codec2             M17 解码"
   # ── 无 .pc、用裸 target_link_libraries（靠 -I/-L 兜） ─────────────────
-  "OPT_BUILD_LIMESDR_SOURCE       file LimeSuite.pc       LimeSDR"
+  # LimeSuite 的 .pc 名就是 LimeSuite（大小写敏感）；模块本身不调 pkg-config，
+  # 只用裸 target_link_libraries(LimeSuite)，所以这里用 .pc 存在性判断可编译性，
+  # 真正的头/库路径靠下面 CMAKE_CXX_FLAGS 的 -I/-L 兜。
+  "OPT_BUILD_LIMESDR_SOURCE      pc   LimeSuite          LimeSDR"
   # ── 厂商库（deps-vendor.sh 编出来的，有 .pc 才开） ─────────────────────
   "OPT_BUILD_PERSEUS_SOURCE       pc   libperseus-sdr     Perseus"
   "OPT_BUILD_RFNM_SOURCE          pc   librfnm            RFNM"
@@ -87,6 +93,11 @@ SPEC=(
   "OPT_BUILD_SDRPLAY_SOURCE       file include/sdrplay_api.h SDRplay（厂商二进制）"
   # ── 无法满足：显式关闭并说明原因 ───────────────────────────────────────
   "OPT_BUILD_USRP_SOURCE         pc   uhd                USRP（未装 libuhd：会拖入整套 Boost dev）"
+  # 下面这几个模块在上游默认就是 OFF，且源码里 include 了仓库中根本不存在的
+  # 头文件（dsp/demodulator.h、dsp/window.h、dsp/resampling.h、dsp/processing.h、
+  # dsp/routing.h、dsp/deframing.h）—— 属未完成的死代码，任何环境下都编不过。
+  "OPT_BUILD_KG_SSTV_DECODER     none OFF                  KG-SSTV 解码（引用不存在的 dsp/*.h，上游默认 OFF）"
+  "OPT_BUILD_WEATHER_SAT_DECODER none OFF                  HRPT 气象卫星解码（同上）"
   "OPT_BUILD_KCSDR_SOURCE        none OFF                  KCSDR（需厂商 FTD3XX SDK，仓库无源码）"
   "OPT_BUILD_BADGESDR_SOURCE     none OFF                  BadgeSDR（source_modules 下无此目录）"
   "OPT_BUILD_HAROGIC_SOURCE      none OFF                  Harogic（需 Aaronia htra_api，闭源）"
@@ -130,8 +141,21 @@ done
 echo "  —— 合计：ON $on / OFF $off"
 
 case "${1:-build}" in
-  clean) echo; echo "==> 清理 $BUILD"; rm -rf "$BUILD" ;;
+  clean) echo; echo "==> 请求彻底清理（--fresh 会重建配置）" ;;
 esac
+
+# 强制重新配置：pkg_check_modules() 的结果会以 INTERNAL 变量写进 CMakeCache.txt，
+# 之后即使 .pc 改了、依赖修好了，直接重跑 cmake 也不会刷新，会一直用旧路径编译
+# （踩过：codec2.pc 修好后 m17_decoder 仍报找不到 codec2.h）。
+#
+# 这里用 cmake 自带的 --fresh（3.24+）：它在配置前自行删掉 CMakeCache.txt 与
+# CMakeFiles/。刻意不用 `rm -rf` —— 在本机沙箱环境下递归删除会被安全策略静默
+# 拦截，导致"看起来清了、其实没清"，非常难查。
+FRESH_ARGS=()
+if [ "${KEEP_BUILD:-0}" != "1" ]; then
+  FRESH_ARGS+=("--fresh")
+  echo; echo "==> 使用 cmake --fresh 重新配置（丢弃陈旧的 pkg-config 缓存）"
+fi
 
 # rpath：让构建树里的二进制/插件无需 make install 也能找到彼此与依赖
 RPATH="\$ORIGIN"
@@ -144,7 +168,7 @@ EXTRA_LDFLAGS="-L$INS/lib/x86_64-linux-gnu -L$INS/lib -Wl,-rpath,$INS/lib/x86_64
 
 echo
 echo "===== 配置 ====="
-"$CM" -S "$SRC" -B "$BUILD" \
+"$CM" "${FRESH_ARGS[@]}" -S "$SRC" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$INSTALL" \
   -DCMAKE_PREFIX_PATH="$INS" \

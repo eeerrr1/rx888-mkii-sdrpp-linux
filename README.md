@@ -84,6 +84,13 @@ bash scripts/run-sdrpp.sh          # Source 里选 "SDDC Source" 或 "SoapySDR S
 
 > 对照：内置 `libsddc` 用的是 `SDDC_INIT_SEARCH_DELAY_MS = 1000`，且等待之后**重新**扫描，所以原生路线一直正常 —— 只有 SoapySDDC 这条路线踩坑。**同一个硬件，两个库的等待策略不同，一个能跑一个不能。**
 
+### E. 做"完整构建"时额外发现的
+| # | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| 13 | `decoder_modules/dab_decoder/src/dab_dsp.h:185` | `volk_32fc_s32fc_x2_rotator2_32fc(out, in, phaseDelta, &phase, count)` —— VOLK ≥ 3.1 的该 API 第三个参数是 `const lv_32fc_t*`（相位**增量指针**），原代码**漏了取地址符**，把值传了进去 → `cannot convert 'lv_32fc_t' to 'const lv_32fc_t*'`。对照 `core/src/dsp/channel/frequency_xlator.h:45` 的正确写法可确认 | 改成 `&phaseDelta`（**注意**下面 `#else` 的旧版 API 签名不同，就是按值传，不要一起改） |
+
+> DAB 模块本身是健全的（只用 `dsp/stream.h`、`dsp/buffer/reshaper.h`、`dsp/multirate/rational_resampler.h` 等真实存在的头文件），就错这一个字符。
+
 补丁拆分见 `patches/sdrpp/*.patch`（按文件分组，便于上游逐条 review）。所有改动都带 `FIXED:` 注释。
 
 ---
@@ -178,31 +185,59 @@ docs/               部署报告与适配方案
 1. **`.pc` 文件要重定位**。有些 `.pc` 写作 `prefix=/usr`（行尾无斜杠），必须先单独处理，否则简单的 `s|/usr/|...|g` 会漏掉它，`pkg-config` 静默回退到系统路径 → 编译失败。
 2. **dev 包只提供 `.so` 软链接，实体在运行库包里**。不一起解出来就会得到悬空链接（`libOpenGL.so -> libOpenGL.so.0` 指向不存在），CMake 报 `missing: OPENGL_opengl_LIBRARY`。所以清单里每个 `-dev` 都紧跟它的运行库包。
 
+### 重定位必须幂等（踩过两次）
+
+`scripts/deps-full.sh` 里的 `.pc` 重定位有两条铁律，违反任何一条都会**静默**产生坏路径：
+
+1. **剥离时只剥「完整前缀」`$PREFIX`，绝不能剥 `$PREFIX/usr`。**
+   否则会把已经写好的 `prefix=$PREFIX/usr` 剥成 `prefix=`（空值），`${prefix}/lib` 随之塌成 `/lib`，模块找不到头文件。厂商库的 `.pc`（libfobos / libdlcr / librfnm）全是 `${prefix}` 形式，一剥就废。
+2. **替换串不能含 `/usr/`。**
+   `$PREFIX`（如 `/home/tsw/sdr/local`）本身不含，所以 `s|/usr/|$PREFIX/usr/|g` 是安全的；若用 `$PREFIX/usr` 做替换串，同一次 `sed` 会把自己刚写进去的 `/usr/` 再匹配一遍，**每跑一次叠加一层前缀**：
+
+   ```
+   libdir=/home/tsw/sdr/local/home/tsw/sdr/local/home/tsw/sdr/local/usr/lib/x86_64-linux-gnu
+   ```
+
+   脚本末尾因此内置了一条自检：扫描所有 `.pc`，任何一行出现两次前缀就报警。
+
+### `pkg_check_modules()` 的缓存会骗人
+
+`pkg_check_modules()` 的结果以 `INTERNAL` 变量写进 `CMakeCache.txt`。**之后即使 `.pc` 修好了，直接重跑 `cmake -S -B` 也不会刷新**，会一直拿旧路径编译（本仓库踩过：`codec2.pc` 修好后 `m17_decoder` 仍报找不到 `codec2.h`，而 `pkg-config --cflags codec2` 明明是好的）。
+
+`build-sdrpp-full.sh` 因此默认加 `cmake --fresh`（CMake 3.24+）。
+
+> 顺带一个环境教训：脚本里本来用 `rm -rf "$BUILD"` 来清缓存，但在受限沙箱下**递归删除会被安全策略静默拦截**，出现"日志说清理了、实际没清"的假象，非常难查。改用 CMake 自带的 `--fresh` 就不再依赖 `rm`。
+
 ---
 
 ## 七、完整构建的模块覆盖
 
-`build-sdrpp-full.sh` 不硬编码开关，而是**逐个模块用 `pkg-config` 探测**，有依赖就 ON、没有就 OFF。
+`build-sdrpp-full.sh` 不硬编码开关，而是**逐个模块探测**（有 `.pc` 就查 `pkg-config`，否则查文件是否存在），有依赖就 ON、没有就 OFF。
 
-**已启用**（对齐 SDR++ 官方 `docker_builds/ubuntu_resolute/do_build.sh`）：
+**实测结果：ON 40 / OFF 13，冒烟测试通过（SDR++ v1.3.0，不设 `LD_LIBRARY_PATH` 也能跑，说明 rpath 自洽）。**
 
-- 源：`sddc` / `soapy` / `airspy` / `airspyhf` / `audio` / `hackrf` / `plutosdr` / `rtl_sdr` / `bladerf` / `limesdr` / `hydrasdr` / `file` / `hermes` / `network` / `rfspace` / `rtl_tcp` / `sdrpp_server` / `spectran_http` / `spyserver`
-- Sink：`audio`（★ 关键：上游最小构建里没有它，导致"只能看频谱不能听"）/ `network` / `new_portaudio` / `portaudio`
-- 解码：`radio` / `atv` / `meteor` / `pager` / `dab` / `m17` / `kg_sstv` / `ryfi` / `vor` / `weather_sat`
-- 其他：`discord_presence` / `frequency_manager` / `iq_exporter` / `recorder` / `rigctl_client` / `rigctl_server` / `scanner` / `scheduler`
+**已启用（40 个）**：
 
-**未启用及原因**：
+- 源（19）：`sddc` ★ / `soapy` ★ / `airspy` / `airspyhf` / `audio` / `bladerf` / `dragonlabs` / `file` / `fobossdr` / `hackrf` / `hermes` / `limesdr` / `network` / `plutosdr` / `rfnm` / `rfspace` / `rtl_sdr` / `rtl_tcp` / `sdrpp_server` / `spectran_http` / `spyserver`
+- Sink（4）：`audio` ★（**关键**：上游最小构建里没有它，导致"只能看频谱不能听"）/ `network` / `new_portaudio` / `network_sink`
+- 解码（8）：`radio` ★ / `atv` / `dab` / `m17` / `meteor` / `pager` / `ryfi` / `vor`
+- 其他（8）：`discord_integration` / `frequency_manager` / `iq_exporter` / `recorder` ★ / `rigctl_client` / `rigctl_server` / `scanner` ★ / `scheduler`
+
+**未启用及原因（13 个）**：
 
 | 模块 | 原因 |
 |---|---|
+| `hydrasdr` | apt 的 `libhydrasdr` 1.0.3 把枚举改名成 `RF_PORT_RX0/RX1/RX2`，而模块写的是 `HYDRASDR_RF_PORT_RX0…`（对应官方自行编译的 `rfone_host`）→ 名字对不上。官方构建用的是自己编的 rfone_host |
+| `perseus` | 需要 autotools（本机无 autoconf/automake/libtool）；release tarball 的 `configure` 在本环境跑不通 |
+| `sdrplay` | 厂商闭源 API，官方下载路径已失效（带正常浏览器头仍 404），且安装器会写系统守护进程 |
 | `usrp` | 未装 `libuhd`——它会拖入整套 Boost dev（11 个包）。官方 Dockerfile 同样没编它 |
-| `perseus` | 需要 autotools；release tarball 的 configure 在本环境跑不通。厂商文档建议自行编译 |
-| `rfnm` | `librfnm` 的 cmake 依赖链（spdlog→fmt）在本地前缀下仍未完全自洽 |
-| `sdrplay` | 厂商闭源 API，官方下载路径已失效（需注册/EULA），且安装器会装系统守护进程 |
 | `kcsdr` | 需厂商 FTD3XX SDK，`source_modules` 下无源码 |
-| `badgesdr` | `source_modules/badgesdr_source` 目录不存在 |
-| `harogic` / `spectran` | 需 Aaronia 闭源 SDK |
+| `badgesdr` | `source_modules/badgesdr_source` 目录不存在（`OPT_BUILD_BADGESDR_SOURCE` 是空选项） |
+| `harogic` / `spectran` | 需 Aaronia 闭源 SDK（`htra_api` / RTSA） |
+| `kg_sstv` / `weather_sat` | **源码里 include 了仓库中根本不存在的头文件**（`dsp/demodulator.h`、`dsp/window.h`、`dsp/resampling.h`、`dsp/processing.h`、`dsp/routing.h`、`dsp/deframing.h`），属未完成的死代码，任何环境下都编不过。上游默认也是 OFF |
 | `falcon9` | 需 `ffplay` |
+| `portaudio_sink`（旧版） | 它的 CMake `project()` 名也叫 `audio_sink`，与 `audio_sink` 模块**撞目标名**，两个一起开会 `add_library` 冲突 → 只保留新版 `new_portaudio_sink` |
+| `android_audio_sink` | Android 专用 |
 
 ---
 

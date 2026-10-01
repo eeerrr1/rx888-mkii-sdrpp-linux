@@ -35,6 +35,25 @@ index 2b6a89d..9b4e2d4 100644
      defConfig["moduleInstances"]["Spectran HTTP Source"]["module"] = "spectran_http_source";
      defConfig["moduleInstances"]["Spectran HTTP Source"]["enabled"] = true;
      defConfig["moduleInstances"]["SpyServer Source"]["module"] = "spyserver_source";
+diff --git a/decoder_modules/dab_decoder/src/dab_dsp.h b/decoder_modules/dab_decoder/src/dab_dsp.h
+index 974ca04..96da9c7 100644
+--- a/decoder_modules/dab_decoder/src/dab_dsp.h
++++ b/decoder_modules/dab_decoder/src/dab_dsp.h
+@@ -182,7 +182,13 @@ namespace dab {
+             lv_32fc_t phase = lv_cmake(1.0f, 0.0f);
+             lv_32fc_t phaseDelta = lv_cmake(cos(offset), sin(offset));
+ #if VOLK_VERSION >= 030100
+-            volk_32fc_s32fc_x2_rotator2_32fc((lv_32fc_t*)_in->readBuf, (lv_32fc_t*)_in->readBuf, phaseDelta, &phase, count);
++            // FIXED: VOLK >= 3.1 的 volk_32fc_s32fc_x2_rotator2_32fc() 第三个参数是
++            //        `const lv_32fc_t*`（相位增量指针），原代码漏了取地址符，直接把
++            //        lv_32fc_t 值传了进去 → "cannot convert 'lv_32fc_t' to
++            //        'const lv_32fc_t*'"，模块在 GCC 15 下无法编译。
++            //        对照 core/src/dsp/channel/frequency_xlator.h:45 的正确写法。
++            //        注意下面的旧版 API 分支签名不同，签名就是按值传，不要一起改。
++            volk_32fc_s32fc_x2_rotator2_32fc((lv_32fc_t*)_in->readBuf, (lv_32fc_t*)_in->readBuf, &phaseDelta, &phase, count);
+ #else
+             volk_32fc_s32fc_x2_rotator_32fc((lv_32fc_t*)_in->readBuf, (lv_32fc_t*)_in->readBuf, phaseDelta, &phase, count);
+ #endif
 diff --git a/source_modules/sddc_source/libsddc/CMakeLists.txt b/source_modules/sddc_source/libsddc/CMakeLists.txt
 index d91bccd..6820a2e 100644
 --- a/source_modules/sddc_source/libsddc/CMakeLists.txt
